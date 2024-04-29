@@ -12,9 +12,9 @@ from ogb.linkproppred import Evaluator, PygLinkPropPredDataset
 from scipy.sparse.csgraph import shortest_path
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
-from torch_geometric.data import Data, InMemoryDataset, NeighborSampler
+from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.datasets import Planetoid
-from torch_geometric.loader import DataLoader
+from torch_geometric.loader import DataLoader, NeighborSampler
 from torch_geometric.transforms import RandomLinkSplit, ToSparseTensor, ToUndirected
 from torch_geometric.utils import k_hop_subgraph, to_scipy_sparse_matrix
 from tqdm.auto import tqdm

@@ -47,7 +47,8 @@ model_type=e5-large
 suffix=main
 
 # it takes half an hour with 4 A100 (40G)
-bash scripts/train.sh --model_type $model_type --dataset $dataset --suffix $suffix \
+bash scripts/train.sh --model_type e5-large --dataset ogbn-arxiv --suffix main \
+    --data_folder ./data \
     --pretrained_repo sentence-transformers/e5-large \
     --lr 5e-5 \
     --weight_decay 1e-5 \

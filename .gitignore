@@ -1,3 +1,12 @@
+# data files and pretrained files
+logs/
+pretrained/
+ckpt/
+data/*
+out/*
+
+.idea/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -131,9 +140,3 @@ dmypy.json
 # style files
 .style.yapf
 
-# data files and pretrained files
-logs/
-pretrained/
-ckpt/
-
-.vscode/
