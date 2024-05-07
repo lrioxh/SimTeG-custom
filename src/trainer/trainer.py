@@ -68,7 +68,7 @@ class Trainer(ABC):
             torch.save(model.state_dict(), ckpt_path)
             logger.info("Saved the model to {}".format(ckpt_path))
         if is_dist():
-            dist.barrier()
+            if is_dist(): dist.barrier()
 
     def load_model(self, model: torch.nn.Module, ckpt_path):
         ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -142,7 +142,7 @@ class Trainer(ABC):
         return logits_embs, x_embs, results  # x_embs is None in GNNTrainer
 
     def train_once(self):
-        dist.barrier()
+        if is_dist(): dist.barrier()
         if self.trial is not None:
             self.trainer._hp_search_setup(self.trial)
         train_output = self.trainer.train()

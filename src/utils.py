@@ -21,10 +21,10 @@ def dict_append(d: dict, u: dict):
 def dist_barrier_context():
     rank = int(os.getenv("RANK", -1))
     if rank not in [0, -1]:
-        dist.barrier()
+        if is_dist(): dist.barrier()
     yield
     if rank == 0:
-        dist.barrier()
+        if is_dist(): dist.barrier()
 
 
 def mkdirs_if_not_exists(path: str):
@@ -33,7 +33,7 @@ def mkdirs_if_not_exists(path: str):
         if not os.path.exists(path):
             os.makedirs(path)
     if rank >= 0:
-        dist.barrier()
+        if is_dist(): dist.barrier()
 
 
 class EmbeddingHandler:
@@ -42,14 +42,14 @@ class EmbeddingHandler:
         rank = int(os.environ["RANK"]) if is_dist() else -1
         if rank <= 0 and not os.path.exists(self.emb_path):
             os.makedirs(self.emb_path)
-        dist.barrier()
+        if is_dist(): dist.barrier()
 
     def save(self, emb: torch.Tensor, saved_name: str):
         saved_name = os.path.join(self.emb_path, saved_name)
         rank = int(os.environ["RANK"]) if is_dist() else -1
         if rank <= 0:
             torch.save(emb, saved_name)
-        dist.barrier()
+        if is_dist(): dist.barrier()
 
     def load(self, saved_name: str):
         if not self.has(saved_name):

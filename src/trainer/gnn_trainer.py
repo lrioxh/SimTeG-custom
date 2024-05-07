@@ -141,7 +141,7 @@ class GNNDecouplingTrainer(Trainer):
     #     if self.rank == 0:
     #         __import__("ipdb").set_trace()
     #     else:
-    #         dist.barrier()
+    #         if is_dist(): dist.barrier()
     #     deg = self.data.adj_t.sum(dim=1).to(torch.float)
     #     deg_inv_sqrt = deg.pow(-0.5)
     #     deg_inv_sqrt[deg_inv_sqrt == float("inf")] = 0

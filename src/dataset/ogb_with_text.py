@@ -49,7 +49,7 @@ class OgbWithText(InMemoryDataset):
         if self.should_tokenize:
             if not osp.exists(self.tokenized_path) and rank <= 0:
                 _ = self.mapping_and_tokenizing()
-            dist.barrier()
+                if is_dist(): dist.barrier()
             self._data.input_ids, self._data.attention_mask = self.load_cached_tokens()
 
     @property

@@ -23,7 +23,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def set_single_env(rank, world_size):
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    # dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
 
@@ -119,6 +119,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    
     args = parse_args()
     save_args(args, args.output_dir)
     main(args)

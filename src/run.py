@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def set_single_env(rank, world_size):
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    # dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
 
@@ -102,9 +102,12 @@ def load_data(args):
 
 def train(args, return_value="valid"):
     # setup dataset: [ogbn-arxiv]
-
-    with dist_barrier_context():
+    if is_dist():
+        with dist_barrier_context():
+            data, split_idx, evaluator = load_data(args)
+    else:
         data, split_idx, evaluator = load_data(args)
+        
     # trainer
     Trainer = get_trainer_class(args)
     trainer = Trainer(args, data, split_idx, evaluator)

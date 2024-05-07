@@ -289,7 +289,7 @@ class LinkLMTrainer(Trainer):
         return valid_results, test_results  # logits_embs is None
 
     def train(self, return_value="valid"):
-        dist.barrier()
+        if is_dist(): dist.barrier()
         self.prepare()
         assert self.args.mode in ["train", "test"]
         if self.args.mode == "train":
