@@ -68,7 +68,7 @@ class Trainer(ABC):
             torch.save(model.state_dict(), ckpt_path)
             logger.info("Saved the model to {}".format(ckpt_path))
         if is_dist():
-            if is_dist(): dist.barrier()
+            dist.barrier()
 
     def load_model(self, model: torch.nn.Module, ckpt_path):
         ckpt = torch.load(ckpt_path, map_location="cpu")

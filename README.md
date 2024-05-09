@@ -24,7 +24,7 @@ This is the official repository of SimTeG. resoureces: [[Paper]](https://arxiv.o
 conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
 conda install pyg -c pyg
 conda install -c dglteam/label/cu118 dgl # for RevGAT
-pip install transformer
+pip install transformers peft evaluate gdown torchmetrics mpi4py
 pip install optuna # for hp search
 pip install deepspeed # recommend using deepspeed if you want to finetune LM by your self
 ```
