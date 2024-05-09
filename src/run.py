@@ -44,7 +44,7 @@ def load_data(args):
         tokenize=tokenize)
     # process data
     if args.dataset == "ogbn-arxiv":
-        transform = T.ToUndirected()
+        transform = T.ToUndirected()    #TODO: 加入PE处理有向图
         data = transform(data)
     # if use bert_x, change it
     if args.use_bert_x:

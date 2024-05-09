@@ -67,6 +67,7 @@ class E5_model(nn.Module):
         config.num_labels = args.num_labels
         config.header_dropout_prob = args.header_dropout_prob
         config.save_pretrained(save_directory=args.output_dir)
+        # config['name_or_path'] = args.pretrained_dir
         # init modules
         self.bert_model = AutoModel.from_pretrained(pretrained_repo, config=config, add_pooling_layer=False)
         self.head = SentenceClsHead(config)

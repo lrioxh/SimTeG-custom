@@ -48,8 +48,10 @@ suffix=main
 
 # it takes half an hour with 4 A100 (40G)
 bash scripts/train.sh --model_type e5-large --dataset ogbn-arxiv --suffix main \
+    --debug\
     --data_folder ./data \
     --pretrained_repo sentence-transformers/e5-large \
+    --pretrained_dir  data/ogbn_arxiv_text/processed\
     --lr 5e-5 \
     --weight_decay 1e-5 \
     --batch_size 20 \
