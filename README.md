@@ -21,10 +21,13 @@ This is the official repository of SimTeG. resoureces: [[Paper]](https://arxiv.o
 
 ## Environment
 ```bash
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+conda install pytorch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 pytorch-cuda=11.7 -c pytorch -c nvidia
+pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
 conda install pyg -c pyg
 conda install -c dglteam/label/cu118 dgl # for RevGAT
-pip install transformers peft evaluate gdown torchmetrics mpi4py
+pip install ogb
+pip install transformers evaluate gdown torchmetrics  networkx colorlog accelerate accuracy
+pip install peft --no-dependencies
 pip install optuna # for hp search
 pip install deepspeed # recommend using deepspeed if you want to finetune LM by your self
 ```
@@ -45,16 +48,15 @@ For all results reported in our paper on OGBN-Arxiv, OGBN-Products, and OGBL-cit
 dataset=ogbn-arxiv
 model_type=e5-large
 suffix=main
-
+    # --debug\
 # it takes half an hour with 4 A100 (40G)
-bash scripts/train.sh --model_type e5-large --dataset ogbn-arxiv --suffix main \
-    --debug\
+bash scripts/train.sh --model_type e5-large-v2 --dataset ogbn-arxiv --suffix main \
+    --debug \
     --data_folder ./data \
-    --pretrained_repo sentence-transformers/e5-large \
-    --pretrained_dir  data/ogbn_arxiv_text/processed\
+    --pretrained_repo sentence-transformers/e5-large-v2 \
     --lr 5e-5 \
     --weight_decay 1e-5 \
-    --batch_size 20 \
+    --batch_size 16 \
     --eval_batch_size 200 \
     --accum_interval 5 \
     --label_smoothing 0.3 \
@@ -62,10 +64,11 @@ bash scripts/train.sh --model_type e5-large --dataset ogbn-arxiv --suffix main \
     --warmup_ratio 0.15 \
     --lr_scheduler_type linear \
     --use_peft \
-    --peft_r 4 \
+    --peft_r 8 \
     --peft_lora_alpha 8 \
     --peft_lora_dropout 0.3 \
     --header_dropout_prob 0.6 \
+    --fp16 \
     --deepspeed ds_config.json # optional, we use stage 2 of deepspeed
 ```
 

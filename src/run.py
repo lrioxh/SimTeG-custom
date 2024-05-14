@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def set_single_env(rank, world_size):
-    # dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
 

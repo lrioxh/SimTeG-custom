@@ -14,7 +14,8 @@ import torch.multiprocessing as mp
 from src.args import LINK_PRED_DATASETS, load_args, parse_args, save_args
 from src.run import train
 from src.utils import dict_append, is_dist, set_logging
-
+os.environ["WANDB_DISABLED"] = "true"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=UserWarning)
 # warnings.filterwarnings("ignore", category=ExperimentalWarning)
@@ -23,7 +24,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 
 def set_single_env(rank, world_size):
-    # dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
 
 
@@ -44,7 +45,13 @@ def set_seed(random_seed):
     torch.cuda.manual_seed(random_seed)
     if is_dist():
         gpus = ",".join([str(_) for _ in range(int(os.environ["WORLD_SIZE"]))])
-        os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+    elif torch.cuda.is_available():
+        gpus = "0"
+        logger.critical(f"Using device cuda:{torch.cuda.current_device()}")
+    else:
+        logger.critical(f"NO GPU available, using CPU...")
+        gpus = ''
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpus
     torch.manual_seed(random_seed)
     np.random.seed(random_seed)
     random.seed(random_seed)
@@ -67,7 +74,8 @@ def main(args):
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         set_single_env(rank, world_size)
-
+    else:
+        ...
     save_args(args, args.output_dir)
 
     if args.dataset in LINK_PRED_DATASETS:

@@ -4,6 +4,7 @@ pretrained/
 ckpt/
 data/*
 out/*
+wandb/*
 
 .idea/*
 

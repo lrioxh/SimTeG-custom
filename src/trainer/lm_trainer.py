@@ -6,7 +6,7 @@ from typing import List, Optional
 import evaluate
 import numpy as np
 import torch
-import torch.distributed as dist
+# import torch.distributed as dist
 from torch.utils.data import DataLoader
 from transformers import EarlyStoppingCallback
 from transformers import Trainer as HugTrainer

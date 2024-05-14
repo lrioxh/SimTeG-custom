@@ -72,7 +72,7 @@ class E5_model(nn.Module):
         self.bert_model = AutoModel.from_pretrained(pretrained_repo, config=config, add_pooling_layer=False)
         self.head = SentenceClsHead(config)
         if args.use_peft:
-            lora_config = LoraConfig(
+            lora_config = LoraConfig(   #TODO: 只微调前后层layers_to_transform 
                 task_type=TaskType.SEQ_CLS,
                 inference_mode=False,
                 r=args.peft_r,
