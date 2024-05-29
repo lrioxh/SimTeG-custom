@@ -19,6 +19,8 @@ LM_LIST = [
     "e5-large-v2",
 ]
 GNN_LIST = ["GAMLP", "SAGN", "SIGN", "SGC", "GraphSAGE", "GCN", "MLP"]
+LM_GNN_LIST = ["e5-revgat"]
+
 SAMPLING_GNN_LIST = ["GraphSAGE", "GCN"]
 DECOUPLING_GNN_LIST = ["GAMLP", "SAGN", "SIGN", "SGC"]
 

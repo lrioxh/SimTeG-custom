@@ -7,7 +7,7 @@ import evaluate
 import numpy as np
 import torch
 # import torch.distributed as dist
-from torch.utils.data import DataLoader
+# from torch.utils.data import DataLoader
 from transformers import EarlyStoppingCallback
 from transformers import Trainer as HugTrainer
 from transformers import TrainingArguments
@@ -41,7 +41,7 @@ class Dataset(torch.utils.data.Dataset):
 
 
 class InnerTrainer(HugTrainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=True):    #TODO：!!重写loss
         if "labels" in inputs:
             labels = inputs.pop("labels")
         else:
@@ -50,7 +50,7 @@ class InnerTrainer(HugTrainer):
         if return_outputs:
             logits, hidden_features = model(**inputs, return_hidden=True)
         else:
-            logits = model(**inputs, return_hidden=False)
+            logits = model(**inputs, return_hidden=False)   #此处连接E5 forward
 
         loss_op = torch.nn.CrossEntropyLoss(label_smoothing=self.args.label_smoothing_factor, reduce="mean")
         loss = loss_op(logits, labels.view(-1))

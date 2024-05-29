@@ -165,7 +165,7 @@ def train(
     alpha = args.alpha
     temp = args.temp
 
-    feat = graph.ndata["feat"]
+    feat = graph.ndata["feat"]  #requires_grand=False
 
     if args.use_labels:
         mask = torch.rand(train_idx.shape) < args.mask_rate
@@ -180,7 +180,7 @@ def train(
         train_pred_idx = train_idx[mask]
 
     optimizer.zero_grad()
-
+    feat = feat[:16,:]
     if args.n_label_iters > 0:
         with torch.no_grad():
             pred = model(graph, feat)
@@ -190,7 +190,7 @@ def train(
     if args.n_label_iters > 0:
         unlabel_idx = torch.cat([train_pred_idx, val_idx, test_idx])
         for _ in range(args.n_label_iters):
-            pred = pred.detach()
+            pred = pred.detach()    #requires_grad为false, 梯度向前传播到此为止
             torch.cuda.empty_cache()
             feat[unlabel_idx, -n_classes:] = F.softmax(pred[unlabel_idx], dim=-1)
             pred = model(graph, feat)
@@ -258,8 +258,8 @@ def run(args, graph, labels, train_idx, val_idx, test_idx, evaluator, n_running)
     mode = args.mode
 
     # define model and optimizer
-    model = gen_model(args).to(device)
-    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    model_gnn = gen_model(args).to(device)  #revgat
+    optimizer = optim.RMSprop(model_gnn.parameters(), lr=args.lr, weight_decay=args.wd)
 
     # training loop
     total_time = 0
@@ -280,7 +280,7 @@ def run(args, graph, labels, train_idx, val_idx, test_idx, evaluator, n_running)
 
         acc, loss = train(
             args,
-            model,
+            model_gnn,
             graph,
             labels,
             train_idx,
@@ -293,7 +293,7 @@ def run(args, graph, labels, train_idx, val_idx, test_idx, evaluator, n_running)
         )
 
         train_acc, val_acc, test_acc, train_loss, val_loss, test_loss, pred = evaluate(
-            args, model, graph, labels, train_idx, val_idx, test_idx, evaluator_wrapper
+            args, model_gnn, graph, labels, train_idx, val_idx, test_idx, evaluator_wrapper
         )
 
         toc = time.time()

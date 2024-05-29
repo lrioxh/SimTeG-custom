@@ -1,19 +1,69 @@
-import copy
 
-import dgl.nn.pytorch as dglnn
+import logging
+from torch import nn
+from peft import LoraConfig, PeftModel, TaskType
+# from src.misc.revgat.model_rev import RevGAT
+# from src.model.lms.lm_modeling import E5_model
+
+from transformers import AutoConfig, AutoModel, DebertaV2Config, DebertaV2Model
+from transformers import logging as transformers_logging
+from src.model.lms.modules import DebertaClassificationHead, SentenceClsHead
+
+import copy
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from dgl import function as fn
-from dgl._ffi.base import DGLError
-from dgl.nn.pytorch.utils import Identity
 from dgl.ops import edge_softmax
 from dgl.utils import expand_as_pair
 
-from .rev import memgcn
-from .rev.rev_layer import SharedDropout
+from src.misc.revgat.rev import memgcn
+from src.misc.revgat.rev.rev_layer import SharedDropout
 
+logger = logging.getLogger(__name__)
+transformers_logging.set_verbosity_error()
 
+# LMs
+class E5_model(nn.Module):
+    def __init__(self, args):
+        super(E5_model, self).__init__()
+        transformers_logging.set_verbosity_error()
+        pretrained_repo = args.pretrained_repo
+        logger.warning(f"inherit model weights from {pretrained_repo}")
+        config = AutoConfig.from_pretrained(pretrained_repo)
+        config.num_labels = args.num_labels
+        config.header_dropout_prob = args.header_dropout_prob
+        config.save_pretrained(save_directory=args.output_dir)
+        # config['name_or_path'] = args.pretrained_dir
+        # init modules
+        self.bert_model = AutoModel.from_pretrained(pretrained_repo, config=config, add_pooling_layer=False)
+        self.head = SentenceClsHead(config)
+        if args.use_peft:
+            lora_config = LoraConfig(   #TODO: 只微调前后层layers_to_transform 
+                task_type=TaskType.SEQ_CLS,
+                inference_mode=False,
+                r=args.peft_r,
+                lora_alpha=args.peft_lora_alpha,
+                lora_dropout=args.peft_lora_dropout,
+            )
+            self.bert_model = PeftModel(self.bert_model, lora_config)
+            self.bert_model.print_trainable_parameters()    # trainable params:
+
+    def average_pool(self, last_hidden_states, attention_mask):  # for E5_model
+        last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+        return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+
+    def forward(self, input_ids, att_mask, return_hidden=False):
+        bert_out = self.bert_model(input_ids=input_ids, attention_mask=att_mask)
+        sentence_embeddings = self.average_pool(bert_out.last_hidden_state, att_mask)
+        out = self.head(sentence_embeddings)
+
+        if return_hidden:
+            sentence_embeddings = F.normalize(sentence_embeddings, p=2, dim=1)
+            return out, sentence_embeddings
+        else:
+            return out
+
+# GNNs
 class ElementWiseLinear(nn.Module):
     def __init__(self, size, weight=True, bias=True, inplace=False):
         super().__init__()
@@ -127,7 +177,7 @@ class GATConv(nn.Module):
             else:
                 h_src = self.feat_drop(feat)
                 feat_src = h_src
-                feat_src = self.fc(h_src).view(-1, self._num_heads, self._out_feats)    # (n, in) to (n, 2, 256)
+                feat_src = self.fc(h_src).view(-1, self._num_heads, self._out_feats)
                 if graph.is_block:
                     h_dst = h_src[: graph.number_of_dst_nodes()]
                     feat_dst = feat_src[: graph.number_of_dst_nodes()]
@@ -136,7 +186,7 @@ class GATConv(nn.Module):
                     feat_dst = feat_src
 
             if self._use_symmetric_norm:
-                degs = graph.out_degrees().float().clamp(min=1)[:16]     #deg=n_nodes,可传入指定nodes？
+                degs = graph.out_degrees().float().clamp(min=1)
                 norm = torch.pow(degs, -0.5)
                 shp = norm.shape + (1,) * (feat_src.dim() - 1)
                 norm = torch.reshape(norm, shp)
@@ -153,7 +203,7 @@ class GATConv(nn.Module):
             # addition could be optimized with DGL's built-in function u_add_v,
             # which further speeds up computation and saves memory footprint.
             el = (feat_src * self.attn_l).sum(dim=-1).unsqueeze(-1)
-            graph.srcdata.update({"ft": feat_src, "el": el})        # update指定idx？
+            graph.srcdata.update({"ft": feat_src, "el": el})
             # compute edge attention, el and er are a_l Wh_i and a_r Wh_j respectively.
             if self.attn_r is not None:
                 er = (feat_dst * self.attn_r).sum(dim=-1).unsqueeze(-1)
@@ -344,7 +394,7 @@ class RevGAT(nn.Module):
 
     def forward(self, graph, feat):
         x = feat
-        if hasattr(self, "encoder"):    # gpt pred
+        if hasattr(self, "encoder"):
             embs = self.encoder(x[:, :5].to(torch.long))
             embs = torch.flatten(embs, start_dim=1)
             x = torch.cat([embs, x[:, 5:]], dim=1)
@@ -376,3 +426,56 @@ class RevGAT(nn.Module):
         x = self.bias_last(x)
 
         return x
+
+# LM-GNN
+class E5_RevGAT(nn.Module):
+    #1 直接联合模型
+    #2 训练时联合模型
+    def __init__(
+        self, 
+        args,
+        in_feats,
+        n_classes,
+        n_hidden,
+        n_layers,
+        n_heads,
+        activation,
+        dropout=0.0,
+        input_drop=0.0,
+        attn_drop=0.0,
+        edge_drop=0.0,
+        use_attn_dst=True,
+        use_symmetric_norm=False,
+        group=2,
+        use_gpt_preds=False,
+        input_norm=True
+        ):
+        super().__init__()
+        self.lm = E5_model(args)
+        self.gnn = RevGAT(
+            in_feats,
+            n_classes,
+            n_hidden,
+            n_layers,
+            n_heads,
+            activation,
+            dropout=0.0,
+            input_drop=0.0,
+            attn_drop=0.0,
+            edge_drop=0.0,
+            use_attn_dst=True,
+            use_symmetric_norm=False,
+            group=2,
+            use_gpt_preds=False,
+            input_norm=True
+        )
+        
+    def forward(self, graph, token, onehot):
+        
+        out, embs = self.lm.forward(token.input_ids, token.attention_mask,return_hidden=True)
+        embs = torch.cat([embs, onehot], dim=-1)
+        x = self.gnn.forward(graph, embs)
+        
+        return x
+        
+    

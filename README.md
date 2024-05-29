@@ -22,11 +22,14 @@ This is the official repository of SimTeG. resoureces: [[Paper]](https://arxiv.o
 ## Environment
 ```bash
 conda install pytorch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 pytorch-cuda=11.7 -c pytorch -c nvidia
-pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
-conda install pyg -c pyg
+pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 torchdata==0.5.1 torchmetrics==1.0.3 -f https://download.pytorch.org/whl/cu117
+pip install torchdata==0.5.1
+conda install pyg==2.3.1 -c pyg
+pip install torch_scatter==2.1.1 torch_sparse==0.6.17 torch_cluster==1.6.1 -f https://data.pyg.org/whl/torch-1.13.1+cu117.html
 conda install -c dglteam/label/cu118 dgl # for RevGAT
 pip install ogb
-pip install transformers evaluate gdown torchmetrics  networkx colorlog accelerate accuracy
+pip install transformers evaluate gdown networkx colorlog accelerate accuracy
+pip install dgl==1.1.3 -f https://data.dgl.ai/wheels/cu117/repo.html
 pip install peft --no-dependencies
 pip install optuna # for hp search
 pip install deepspeed # recommend using deepspeed if you want to finetune LM by your self
@@ -50,10 +53,9 @@ model_type=e5-large
 suffix=main
     # --debug\
 # it takes half an hour with 4 A100 (40G)
-bash scripts/train.sh --model_type e5-large-v2 --dataset ogbn-arxiv --suffix main \
-    --debug \
+bash scripts/train.sh --model_type e5-large --dataset ogbn-arxiv --suffix main \
     --data_folder ./data \
-    --pretrained_repo sentence-transformers/e5-large-v2 \
+    --pretrained_repo sentence-transformers/e5-large \
     --lr 5e-5 \
     --weight_decay 1e-5 \
     --batch_size 16 \
@@ -64,7 +66,7 @@ bash scripts/train.sh --model_type e5-large-v2 --dataset ogbn-arxiv --suffix mai
     --warmup_ratio 0.15 \
     --lr_scheduler_type linear \
     --use_peft \
-    --peft_r 8 \
+    --peft_r 4 \
     --peft_lora_alpha 8 \
     --peft_lora_dropout 0.3 \
     --header_dropout_prob 0.6 \

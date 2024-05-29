@@ -2,6 +2,7 @@ from .gnns.gnn_modeling import *
 from .gnns.link_gnn_modeling import *
 from .lms.link_lm_modeling import *
 from .lms.lm_modeling import *
+from .lm_gnn import *
 
 node_cls_model_class = {
     "GraphSAGE": GraphSAGE,
@@ -20,6 +21,7 @@ node_cls_model_class = {
     "e5-large": E5_model,
     "e5-large-v2": E5_model,
     "roberta-large": Roberta,
+    "e5-revgat": E5_RevGAT,
 }
 
 link_pred_model_class = {
