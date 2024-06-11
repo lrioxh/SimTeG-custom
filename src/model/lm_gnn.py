@@ -2,8 +2,6 @@
 import logging
 from torch import nn
 from peft import LoraConfig, PeftModel, TaskType
-# from src.misc.revgat.model_rev import RevGAT
-# from src.model.lms.lm_modeling import E5_model
 
 from transformers import AutoConfig, AutoModel, DebertaV2Config, DebertaV2Model
 from transformers import logging as transformers_logging
@@ -18,6 +16,8 @@ from dgl.utils import expand_as_pair
 
 from src.misc.revgat.rev import memgcn
 from src.misc.revgat.rev.rev_layer import SharedDropout
+
+import src.lora as lora
 
 logger = logging.getLogger(__name__)
 transformers_logging.set_verbosity_error()

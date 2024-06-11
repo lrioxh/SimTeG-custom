@@ -9,17 +9,21 @@ def parse_args():
     parser = argparse.ArgumentParser(
         "GAT implementation on ogbn-arxiv", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--suffix", type=str)
+    parser.add_argument("--suffix", type=str, default="main")
     parser.add_argument("--cpu", action="store_true", help="CPU mode. This option overrides --gpu.")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--n_runs", type=int, default=1, help="running times")
-    parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs")    
+    parser.add_argument("--n_epochs", type=int, default=5, help="number of epochs")    
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
-    parser.add_argument("--batch_size", type=int, default=8, help="for LM")
+    parser.add_argument("--batch_size", type=int, default=160, help="for LM static embedding")
+    parser.add_argument("--kernel_size", type=int, default=8, help="for trainable node kernel")
+    parser.add_argument("--grad_padding", type=int, default=1, help="padding size for grad scope")
+    parser.add_argument("--grad_size", type=int, default=20, help="Max Grad Size")
+    parser.add_argument("--cold_padding", type=int, default=0, help="padding size for cold scope, -1 means all graph")
     parser.add_argument("--eval_epoch", type=int, default=1)
-    parser.add_argument("--reuse_epoch", type=int, default=2, help="reuse LM embs every reuse_epoch")
+    # parser.add_argument("--reuse_epoch", type=int, default=2, help="reuse LM embs every reuse_epoch")
     parser.add_argument(
         "--use_labels", action="store_true", default=False, help="Use labels in the training set as input features."
     )
@@ -113,6 +117,7 @@ def parse_args():
     args.use_peft = True
     args.fp16 = True
     args.use_labels = True
+    args.debug = 60000
     return args
 
 def save_args(args, dir):

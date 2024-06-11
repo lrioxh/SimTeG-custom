@@ -1,19 +1,24 @@
 {
     "version": "0.2.0",
-    "model_type": "e5-large",
-    "dataset": "ogbn-arxiv",
-    "suffix": "main",
-    "output_dir": "./out/${dataset}/${model_type}/${suffix}",
-    "ckpt_dir": "${output_dir}/ckpt",
     "configurations": [
-
         {
             "name": "Python 调试程序: 当前文件",
             "type": "debugpy",
             "request": "launch",
             "justMyCode": false,
             "program": "${file}",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "model_type": "e5-revgat",
+                "dataset": "ogbn-arxiv",
+                "suffix": "main",
+                "output_dir": "${workspaceFolder}/out/${env:dataset}/${env:model_type}/${env:suffix}",
+                "ckpt_dir": "${env:output_dir}/ckpt",
+            },
+            // "redirectOutput": true,
+            // "preLaunchTask": "startLogging",
+            // "envFile": "${workspaceFolder}/.env",
         },
         {
             "name": "Python: Attach",
@@ -30,6 +35,34 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}"
+        },
+        {
+            "name": "Python: Run with Logging Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/run_log.sh",
+            "console": "integratedTerminal",
+            "args": [
+                "${file}.py",
+            ],
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+    ],
+    "tasks": [
+        {
+            "label": "startLogging",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-c",
+                "\"import subprocess; subprocess.run(['python', '${file}'], stderr=subprocess.STDOUT, stdout=open('${env:output_dir}', 'w'))\""
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
         }
     ]
 }

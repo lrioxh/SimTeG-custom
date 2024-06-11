@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Pre Task",
+            "type": "shell",
+            "command": "echo ${env:ckpt_dir} && mkdir -p ${env:ckpt_dir}", // 初始化命令
+            "problemMatcher": []
+        },
+        {
+            "label": "Post-Debug Task",
+            "type": "shell",
+            "command": "echo END", // 清理命令
+            "problemMatcher": []
+        },
+        {
+            "label": "startLogging",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "-c",
+                "\"import subprocess; subprocess.run(['python', '${file}'], stderr=subprocess.STDOUT, stdout=open('${env:output_dir}', 'w'))\""
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

@@ -171,7 +171,7 @@ def train(
         mask = torch.rand(train_idx.shape) < args.mask_rate
 
         train_labels_idx = train_idx[mask]
-        train_pred_idx = train_idx[~mask]
+        train_pred_idx = train_idx[~mask]   #输入图label分train/pred，loss只计算pred
 
         feat = add_labels(feat, labels, train_labels_idx)
     else:
@@ -180,7 +180,7 @@ def train(
         train_pred_idx = train_idx[mask]
 
     optimizer.zero_grad()
-    feat = feat[:16,:]
+    # feat = feat[:16,:]
     if args.n_label_iters > 0:
         with torch.no_grad():
             pred = model(graph, feat)
@@ -192,7 +192,7 @@ def train(
         for _ in range(args.n_label_iters):
             pred = pred.detach()    #requires_grad为false, 梯度向前传播到此为止
             torch.cuda.empty_cache()
-            feat[unlabel_idx, -n_classes:] = F.softmax(pred[unlabel_idx], dim=-1)
+            feat[unlabel_idx, -n_classes:] = F.softmax(pred[unlabel_idx], dim=-1)   # 将预测label写入
             pred = model(graph, feat)
 
     if mode == "teacher":

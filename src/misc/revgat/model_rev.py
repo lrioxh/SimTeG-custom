@@ -136,7 +136,7 @@ class GATConv(nn.Module):
                     feat_dst = feat_src
 
             if self._use_symmetric_norm:
-                degs = graph.out_degrees().float().clamp(min=1)[:16]     #deg=n_nodes,可传入指定nodes？
+                degs = graph.out_degrees().float().clamp(min=1)     #deg=n_nodes,可传入指定nodes？
                 norm = torch.pow(degs, -0.5)
                 shp = norm.shape + (1,) * (feat_src.dim() - 1)
                 norm = torch.reshape(norm, shp)

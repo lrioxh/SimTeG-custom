@@ -84,9 +84,10 @@ def set_logging():
         root.handlers.clear()
 
     root.setLevel(logging.INFO)
-    log_format = "[%(name)s %(asctime)s] %(message)s"
+    log_format = "[%(name)s %(asctime)s]%(lineno)s: %(message)s"
     color_format = "%(log_color)s" + log_format
 
+    # logging.FileHandler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(colorlog.ColoredFormatter(color_format))
