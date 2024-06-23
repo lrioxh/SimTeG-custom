@@ -34,7 +34,7 @@ model=revgat
 #     --n-runs 3 \
 #     2>&1 | tee ${output_dir}/log.txt
 
-dataset=ogbn-arxiv
+dataset=ogbn-products
 
 lm_model_type=e5-large
 suffix=ensemble_X_${lm_model_type}
@@ -47,8 +47,33 @@ mkdir -p ${ckpt_dir}
 
 bert_x_dir=out/${dataset}/${lm_model_type}/main/cached_embs/x_embs.pt
 
+# python -m src.misc.revgat.main \
+#     --use-norm \
+#     --no-attn-dst \
+#     --mode teacher \
+#     --gpu 0 \
+#     --dropout 0.58 \
+#     --edge-drop 0.46 \
+#     --group 1 \
+#     --input-drop 0.37 \
+#     --label_smoothing_factor 0.02 \
+#     --n-heads 2 \
+#     --n-hidden 256 \
+#     --n-label-iters 2 \
+#     --n-layers 2 \
+#     --use-labels \
+#     --suffix ensemble_X_e5-large \
+#     --use_bert_x \
+#     --bert_x_dir out/ogbn-products/e5-large/main/cached_embs/x_embs.pt \
+#     --ckpt_dir out/ogbn-products/revgat/ensemble_X_e5-large/ckpt \
+#     --output_dir out/ogbn-products/revgat/ensemble_X_e5-large \
+#     --save_pred \
+#     --n-runs 3 \
+#     2>&1 | tee out/ogbn-products/revgat/ensemble_X_e5-large/log.txt &
+
+# -m debugpy --listen 12346 --wait-for-client \
 python -m debugpy --listen 12346 --wait-for-client \
-    -m src.misc.revgat.main \
+        -m src.misc.revgat.main \
     --use-norm \
     --no-attn-dst \
     --mode teacher \

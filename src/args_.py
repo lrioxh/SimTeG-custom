@@ -14,14 +14,14 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--n_runs", type=int, default=1, help="running times")
-    parser.add_argument("--n_epochs", type=int, default=5, help="number of epochs")    
+    parser.add_argument("--n_epochs", type=int, default=10, help="number of epochs")    
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
     parser.add_argument("--batch_size", type=int, default=160, help="for LM static embedding")
     parser.add_argument("--kernel_size", type=int, default=8, help="for trainable node kernel")
     parser.add_argument("--grad_padding", type=int, default=1, help="padding size for grad scope")
     parser.add_argument("--grad_size", type=int, default=20, help="Max Grad Size")
-    parser.add_argument("--cold_padding", type=int, default=0, help="padding size for cold scope, -1 means all graph")
+    parser.add_argument("--frozen_padding", type=int, default=1, help="padding size for frozen scope, -1 means all graph")
     parser.add_argument("--eval_epoch", type=int, default=1)
     # parser.add_argument("--reuse_epoch", type=int, default=2, help="reuse LM embs every reuse_epoch")
     parser.add_argument(
@@ -31,9 +31,9 @@ def parse_args():
     parser.add_argument("--mask_rate", type=float, default=0.5, help="train mask rate")
     parser.add_argument("--no_attn_dst", action="store_true", help="Don't use attn_dst.")
     parser.add_argument("--use_norm", action="store_true", help="Use symmetrically normalized adjacency matrix.")
-    parser.add_argument("--n_layers", type=int, default=3, help="number of layers")
-    parser.add_argument("--n_heads", type=int, default=3, help="number of heads")
-    parser.add_argument("--n_hidden", type=int, default=250, help="number of hidden units")
+    parser.add_argument("--n_layers", type=int, default=2, help="number of layers")
+    parser.add_argument("--n_heads", type=int, default=2, help="number of heads")
+    parser.add_argument("--n_hidden", type=int, default=256, help="number of hidden units")
     parser.add_argument("--dropout", type=float, default=0.75, help="dropout rate")
     parser.add_argument("--input_drop", type=float, default=0.1, help="input drop rate")
     parser.add_argument("--attn_drop", type=float, default=0.0, help="attention drop rate")
@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument("--save_pred", action="store_true", help="save final predictions")
     # parser.add_argument("--save", type=str, default="exp", help="save exp")
     # parser.add_argument("--backbone", type=str, default="rev", help="gcn backbone [deepergcn, wt, deq, rev, gr]")
-    parser.add_argument("--group", type=int, default=2, help="num of groups for rev gnns")
+    parser.add_argument("--group", type=int, default=1, help="num of groups for rev gnns")
     parser.add_argument("--kd_dir", type=str, default="./kd", help="kd path for pred")
     parser.add_argument("--kd_mode", type=str, default="teacher", help="kd mode [teacher, student]")
     parser.add_argument("--alpha", type=float, default=0.5, help="ratio of kd loss")
@@ -61,7 +61,6 @@ def parse_args():
     parser.add_argument("--attention_dropout_prob", type=float, default=0.1)
     parser.add_argument("--adapter_hidden_size", type=int, default=768)
     parser.add_argument("--label_smoothing", type=float, default=0.3)
-    parser.add_argument("--warmup_ratio", type=float, default=0.1)
     parser.add_argument("--num_iterations", type=int, default=4)
     parser.add_argument("--avg_alpha", type=float, default=0.5)
     parser.add_argument(
@@ -82,11 +81,11 @@ def parse_args():
     parser.add_argument("--data_folder", type=str, default="../data")
     parser.add_argument("--dataset", type=str, default="ogbn-arxiv")
     parser.add_argument("--task_type", type=str, default="node_cls")
-    parser.add_argument("--ckpt_dir", type=str)
+    parser.add_argument("--ckpt_dir", type=str, default='', help="path to load gnn ckpt")
     parser.add_argument("--output_dir", type=str, default=f"out")    
-    parser.add_argument(
-        "--ckpt_name", type=str, default="TGRoberta-best.pt"
-    )  # ckpt name to be loaded    
+    # parser.add_argument(
+    #     "--ckpt_name", type=str, default="TGRoberta-best.pt"
+    # )  # ckpt name to be loaded    
     parser.add_argument(
         "--pretrained_repo",
         type=str,
@@ -105,6 +104,7 @@ def parse_args():
     parser.add_argument("--use_gpt_preds", action="store_true")
     
     # peft & lora hyperparams
+    parser.add_argument("--fullft", type=int, default=1, help='full fine-tuning epochs before PEFT for GM')
     parser.add_argument("--use_peft", action="store_true", default=False)
     parser.add_argument("--peft_r", type=int, default=4)
     parser.add_argument("--peft_lora_alpha", type=float, default=8)
@@ -114,6 +114,9 @@ def parse_args():
     args = _set_dataset_specific_args(args)
     args = _set_lm_and_gnn_type(args)
     args = _set_pretrained_repo(args)
+    args.save = f"{args.output_dir}/{args.dataset}/{args.model_type}/{args.suffix}"
+    os.makedirs(args.save,exist_ok=True)
+    args.no_attn_dst = True
     args.use_peft = True
     args.fp16 = True
     args.use_labels = True

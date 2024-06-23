@@ -8,6 +8,7 @@ import random
 import time
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
+from functools import lru_cache
 
 import dgl
 import numpy as np
@@ -24,6 +25,7 @@ from src.misc.revgat.loss import loss_kd_only
 from src.model.lm_gnn import RevGAT, E5_model
 from src.dataset import load_data_bundle
 from src.args_ import parse_args, save_args
+import src.lora as lora
 
 # -*- coding: utf-8 -*-
 
@@ -100,6 +102,7 @@ class LM_GNN():
         
         self.model_lm = None
         self.model_gnn = None
+
         
     def custom_loss_function(self, x, labels, label_smoothing_factor):
         y = F.cross_entropy(x, labels[:, 0], reduction="none", label_smoothing=label_smoothing_factor)
@@ -134,15 +137,23 @@ class LM_GNN():
     def save_pred(self, pred, run_num, kd_dir):
         os.makedirs(kd_dir,exist_ok=True)
         fname = os.path.join(kd_dir, "best_pred_run{}.pt".format(run_num))
-        torch.save(pred.cpu(), fname)    
+        torch.save(pred.cpu(), fname)  
+        
+    def save_model(self, run_num):
+        out_dir = f"{self.args.save}/ckpt"
+        os.makedirs(out_dir,exist_ok=True)
+        fname_gnn = os.path.join(out_dir, f"best_run{run_num}_gnn.pt")
+        torch.save(self.model_gnn.state_dict(), fname_gnn)  
+        fname_lm = os.path.join(out_dir, f"best_run{run_num}_lm.pt")
+        torch.save(self.model_lm.state_dict(), fname_lm)  
         
     def count_parameters(self):
         return sum([p.numel() for p in \
                                     list(self.model_gnn.parameters())+list(self.model_lm.parameters()) \
                                     if p.requires_grad])
-    
+    @lru_cache(8)
     def id_in_parent(self, parent,sub):
-        if self.args.cold_padding >= 0:
+        if self.args.frozen_padding >= 0:
             # 第一步：对 tensor1 进行排序
             sorted_parent, sorted_indices = torch.sort(parent)
 
@@ -153,6 +164,7 @@ class LM_GNN():
             return sorted_indices[sorted_pos]
         else:
             return sub
+        
     @torch.no_grad()
     def get_static_feat(self):
         text_loader = DataLoader(self.text_data, batch_size=self.args.batch_size, shuffle=False)
@@ -210,9 +222,9 @@ class LM_GNN():
         # if args.use_bert_x:
         # self.graph.ndata["input_ids"] = text_token.input_ids
         # self.graph.ndata["attention_mask"] = text_token.attention_mask
-        logger.warning(
-            "Loaded node tokens of shape={}".format(text_token["input_ids"].shape)
-        )
+        # logger.warning(
+        #     "Loaded node tokens of shape={}".format(text_token["input_ids"].shape)
+        # )
         # TODO
         if self.args.use_gpt_preds:
             preds = []
@@ -241,24 +253,26 @@ class LM_GNN():
             self.text_data = Subset(self.text_data, debug_idx)
         # if args.use_gpt_preds:
         #     n_node_feats = args.n_hidden * 5
-        # else:
-                
+        # else: 
+        
         self.n_node = len(self.text_data)
         self.n_classes = (self.labels.max() + 1).item()
+        logger.warning(
+            f"Loaded node tokens of shape=({self.n_node},{text_token.input_ids.shape[1]})")      
 
         return 1
 
     def init_loader(self):
-        if self.args.cold_padding > 0: 
+        if self.args.frozen_padding > 0: 
             sampler = dgl.dataloading.NeighborSampler(
-                [1]+[-1 for _ in range(self.args.cold_padding)]+[1 for _ in range(self.args.grad_padding)])
+                [1]+[-1 for _ in range(self.args.frozen_padding)]+[1 for _ in range(self.args.grad_padding)])
             self.graph_loader = dgl.dataloading.DataLoader(
                 self.graph, self.train_idx, sampler,
                 batch_size=self.args.kernel_size,
                 shuffle=False,
                 drop_last=False,
                 num_workers=4)
-        else:   # 包括cold_padding=0
+        else:   # 包括frozen_padding=0
             # if self.args.grad_padding > 0:
             #     sampler = dgl.dataloading.MultiLayerFullNeighborSampler(self.args.grad_padding)
             #     batch_size = self.args.kernel_size
@@ -278,17 +292,14 @@ class LM_GNN():
 
     def gen_model(self):
         if self.args.use_labels:
-            n_node_feats_ = self.args.hidden_size + self.n_classes
+            self.args.n_node_feats = self.args.hidden_size + self.n_classes
         else:
-            n_node_feats_ = self.args.hidden_size
+            self.args.n_node_feats = self.args.hidden_size
 
         if self.args.gnn_type == "RevGAT":
             self.model_gnn = RevGAT(
-                n_node_feats_,
+                self.args,
                 self.n_classes,
-                n_hidden=self.args.n_hidden,
-                n_layers=self.args.n_layers,
-                n_heads=self.args.n_heads,
                 activation=F.relu,
                 dropout=self.args.dropout,
                 input_drop=self.args.input_drop,
@@ -298,6 +309,11 @@ class LM_GNN():
                 use_symmetric_norm=self.args.use_norm,
                 use_gpt_preds=self.args.use_gpt_preds,
             )
+
+            if self.args.ckpt_dir != '' and os.path.exists(self.args.ckpt_dir):
+                self.model_gnn.load_state_dict(torch.load(self.args.ckpt_dir),strict=False)
+                logger.info(f"Loaded PGM from {self.args.ckpt_dir}")
+                self.model_gnn.convs[-1].reset_parameters()
         else:
             raise Exception("Unknown gnn")
         
@@ -308,13 +324,44 @@ class LM_GNN():
 
         return 1
 
-
+    def lora_gnn(self):
+        src_model = self.model_gnn.to('cpu')
+        self.model_gnn = RevGAT(
+                self.args,
+                self.n_classes,
+                activation=F.relu,
+                dropout=self.args.dropout,
+                input_drop=self.args.input_drop,
+                attn_drop=self.args.attn_drop,
+                edge_drop=self.args.edge_drop,
+                use_attn_dst=not self.args.no_attn_dst,
+                use_symmetric_norm=self.args.use_norm,
+                use_gpt_preds=self.args.use_gpt_preds,
+                lora_params={
+                    'use_lora': self.args.use_peft,
+                    'r': self.args.peft_r,
+                    'lora_alpha': self.args.peft_lora_alpha,
+                    'lora_dropout': self.args.peft_lora_dropout
+                    }
+            )
+        self.model_gnn.load_state_dict(src_model.state_dict(), strict=False)
+         
+        gc.collect()
+        torch.cuda.empty_cache()   
+        self.model_gnn.to(self.device)
+        lora.mark_only_lora_as_trainable(self.model_gnn)
+        self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
+                                       lr=self.args.lr, weight_decay=self.args.wd)
+        
+        logger.info("GM switched to LoRA")
+        logger.info(f"Number of params: {self.count_parameters()}")
 
     def train(
         self, epoch, evaluator, mode="teacher", teacher_output=None
     ):
         self.model_gnn.train()
         self.model_lm.train()
+        
         if mode == "student":
             assert teacher_output != None
 
@@ -328,7 +375,7 @@ class LM_GNN():
         if self.args.use_labels:
             self.feat_static = torch.cat([self.feat_static, 
                               torch.zeros((self.n_node, self.n_classes), 
-                                        #   dtype=torch.float16 if self.args.fp16 else torch.float32, 
+                                          dtype=torch.float16 if self.args.fp16 else torch.float32, 
                                           device=self.device)],
                               dim=-1)
         # res = torch.zeros(self.labels.shape)
@@ -339,20 +386,18 @@ class LM_GNN():
         with tqdm(total=num_batches, desc=f'{epoch}/{self.args.n_epochs} ', unit='batch', file=open(os.devnull, 'w')) as pbar:
             with self.graph_loader.enable_cpu_affinity():
                 for i, (sub_idx, train_pred_idx, blocks) in enumerate(self.graph_loader):
-                    if self.args.cold_padding > 0:
+                    if self.args.frozen_padding > 0:
                         # sub_idx = sub_idx.to(self.device)
                         graph = dgl.node_subgraph(self.graph, sub_idx, output_device=self.device)
                         grad_idx = blocks[-1].srcdata['_ID']
                         feat = self.feat_static[sub_idx]
-                        mask = torch.isin(sub_idx, self.train_idx)
-                        train_idx = sub_idx[mask]
+                        train_idx = sub_idx[torch.isin(sub_idx, self.train_idx)]
                         # n_nodes = len(sub_idx)
-                    elif self.args.cold_padding == 0:
+                    elif self.args.frozen_padding == 0:
                         graph = blocks.to(device=self.device)
                         grad_idx = sub_idx
                         feat = self.feat_static[sub_idx]
-                        mask = torch.isin(sub_idx, self.train_idx)
-                        train_idx = sub_idx[mask]
+                        train_idx = sub_idx[torch.isin(sub_idx, self.train_idx)]
                     else:
                         graph = self.graph.to(device=self.device)
                         feat = self.feat_static
@@ -373,12 +418,12 @@ class LM_GNN():
                             with autocast():
                                 out, embs = self.model_lm(input_ids, attention_mask, return_hidden=True)
                             # embs = embs.to(torch.float16)
+                            feat = feat.to(dtype=torch.float32)
                         else:
                             out, embs = self.model_lm(input_ids, attention_mask, return_hidden=True)
-                        
+                    
+                    torch.cuda.empty_cache()    
                     gc.collect()
-                    torch.cuda.empty_cache()
-                    # feat = replace_rows(feat, grad_idx, embs)
                     # gnn
                     if self.args.use_labels:
                        
@@ -406,12 +451,16 @@ class LM_GNN():
                         pred = self.model_gnn(graph, feat)
 
                     if self.args.n_label_iters > 0:
-                        unlabel_idx = torch.cat([train_pred_idx, self.val_idx, self.test_idx])
+                        # unlabel_idx = torch.cat([train_pred_idx, self.val_idx, self.test_idx])
+                        unlabel_idx = set(sub_idx.tolist()) - set(train_labels_idx.tolist())
+                        unlabel_idx = torch.tensor(list(unlabel_idx))
                         for _ in range(self.args.n_label_iters):
                             pred = pred.detach()    #requires_grad为false, 梯度向前传播到此为止
                             torch.cuda.empty_cache()
-                            onehot_labels[unlabel_idx] = F.softmax(pred[unlabel_idx], dim=-1)
-                            feat[unlabel_idx, -self.n_classes:] = onehot_labels[unlabel_idx]
+                            onehot_labels[unlabel_idx] = F.softmax(
+                                pred[self.id_in_parent(sub_idx, unlabel_idx)], dim=-1)
+                            feat[self.id_in_parent(sub_idx, unlabel_idx), -self.n_classes:] \
+                                = onehot_labels[unlabel_idx]
                             # embs = torch.cat([embs, onehot_labels[grad_idx]], dim=-1)
                             # feat = replace_rows(feat, grad_idx, embs)
                             pred = self.model_gnn(graph, feat)
@@ -424,7 +473,9 @@ class LM_GNN():
                         loss = loss_gt * (1 - alpha) + loss_kd * alpha
                     else:
                         raise Exception("unkown mode")
-
+                    
+                    torch.cuda.empty_cache()    
+                    gc.collect()
                     if self.args.fp16:
                         self.scaler.scale(loss).backward()
                         self.scaler.step(self.optimizer)
@@ -440,6 +491,8 @@ class LM_GNN():
 
     @torch.no_grad()
     def evaluate(self, evaluator):
+        torch.cuda.empty_cache()    
+        gc.collect()
         self.model_gnn.eval()
         self.model_lm.eval()
 
@@ -507,7 +560,8 @@ class LM_GNN():
                 teacher_output = None
 
             self.adjust_learning_rate(self.args.lr, epoch)
-
+            if self.args.fullft + 1 == epoch:
+                self.lora_gnn()
             acc, loss = self.train(
                 epoch,
                 evaluator_wrapper,
@@ -521,9 +575,9 @@ class LM_GNN():
             toc = time.time()
             total_time += toc - tic
 
-            if epoch == 1:
-                peak_memuse = torch.cuda.max_memory_allocated(self.device) / float(1024**3)
-                logger.info("Peak memuse {:.2f} G".format(peak_memuse))
+            # if epoch == 1:
+            peak_memuse = torch.cuda.max_memory_allocated(self.device) / float(1024**3)
+            logger.info("Peak memuse {:.2f} G".format(peak_memuse))
 
             if val_acc > best_val_acc:
                 best_val_loss = val_loss
@@ -566,8 +620,8 @@ def main():
     gbc = LM_GNN(parse_args())
     # args = parse_args()
 
-    gbc.args.save = f"{gbc.args.output_dir}/{gbc.args.dataset}/{gbc.args.model_type}/{gbc.args.suffix}"
-    os.makedirs(gbc.args.save,exist_ok=True)
+    # gbc.args.save = f"{gbc.args.output_dir}/{gbc.args.dataset}/{gbc.args.model_type}/{gbc.args.suffix}"
+    # os.makedirs(gbc.args.save,exist_ok=True)
     save_args(gbc.args, gbc.args.save)
     
     if not gbc.args.use_labels and gbc.args.n_label_iters > 0:

@@ -22,6 +22,24 @@ import src.lora as lora
 logger = logging.getLogger(__name__)
 transformers_logging.set_verbosity_error()
 
+def _init_lora_linear(in_feats, out_feats, lora_params, **kwargs):
+    if lora_params and lora_params.get('use_lora', False):
+        return lora.Linear(
+            in_feats, out_feats,
+            lora_params['r'], lora_params['lora_alpha'], lora_params['lora_dropout'], **kwargs
+        )
+    else:
+        return nn.Linear(in_feats, out_feats, **kwargs)
+
+def _init_lora_emb(in_feats, out_feats, lora_params, **kwargs):
+    if lora_params and lora_params.get('use_lora', False):
+        return lora.Embedding(
+            in_feats, out_feats,
+            lora_params['r'], lora_params['lora_alpha'], lora_params['lora_dropout'], **kwargs
+        )
+    else:
+        return nn.Embedding(in_feats, out_feats, **kwargs)
+
 # LMs
 class E5_model(nn.Module):
     def __init__(self, args):
@@ -39,11 +57,12 @@ class E5_model(nn.Module):
         self.head = SentenceClsHead(config)
         if args.use_peft:
             lora_config = LoraConfig(   #TODO: 只微调前后层layers_to_transform 
-                task_type=TaskType.SEQ_CLS,
+                task_type=TaskType.SEQ_CLS, # .CAUSAL_LM
                 inference_mode=False,
                 r=args.peft_r,
                 lora_alpha=args.peft_lora_alpha,
                 lora_dropout=args.peft_lora_dropout,
+                # layers_to_transform = [],
             )
             self.bert_model = PeftModel(self.bert_model, lora_config)
             self.bert_model.print_trainable_parameters()    # trainable params:
@@ -114,6 +133,7 @@ class GATConv(nn.Module):
         activation=None,
         allow_zero_in_degree=False,
         use_symmetric_norm=False,
+        lora_params = None
     ):
         super(GATConv, self).__init__()
         self._num_heads = num_heads
@@ -122,10 +142,10 @@ class GATConv(nn.Module):
         self._allow_zero_in_degree = allow_zero_in_degree
         self._use_symmetric_norm = use_symmetric_norm
         if isinstance(in_feats, tuple):
-            self.fc_src = nn.Linear(self._in_src_feats, out_feats * num_heads, bias=False)
-            self.fc_dst = nn.Linear(self._in_dst_feats, out_feats * num_heads, bias=False)
+            self.fc_src = _init_lora_linear(self._in_src_feats, out_feats * num_heads, lora_params, bias=False)
+            self.fc_dst = _init_lora_linear(self._in_dst_feats, out_feats * num_heads, lora_params, bias=False)
         else:
-            self.fc = nn.Linear(self._in_src_feats, out_feats * num_heads, bias=False)
+            self.fc = _init_lora_linear(self._in_src_feats, out_feats * num_heads, lora_params, bias=False)
         self.attn_l = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
         if use_attn_dst:
             self.attn_r = nn.Parameter(torch.FloatTensor(size=(1, num_heads, out_feats)))
@@ -138,7 +158,7 @@ class GATConv(nn.Module):
         self.edge_drop = edge_drop
         self.leaky_relu = nn.LeakyReLU(negative_slope)
         if residual:
-            self.res_fc = nn.Linear(self._in_dst_feats, num_heads * out_feats, bias=False)
+            self.res_fc = _init_lora_linear(self._in_dst_feats, num_heads * out_feats, lora_params, bias=False)
         else:
             self.register_buffer("res_fc", None)
         self.reset_parameters()
@@ -261,6 +281,7 @@ class RevGATBlock(nn.Module):
         use_attn_dst=True,
         allow_zero_in_degree=True,
         use_symmetric_norm=False,
+        lora_params = None
     ):
         super(RevGATBlock, self).__init__()
 
@@ -277,10 +298,11 @@ class RevGATBlock(nn.Module):
             use_attn_dst=use_attn_dst,
             allow_zero_in_degree=allow_zero_in_degree,
             use_symmetric_norm=use_symmetric_norm,
+            lora_params=lora_params
         )
         self.dropout = SharedDropout()
         if edge_emb > 0:
-            self.edge_encoder = nn.Linear(edge_feats, edge_emb)
+            self.edge_encoder = _init_lora_linear(edge_feats, edge_emb, lora_params)
         else:
             self.edge_encoder = None
 
@@ -308,11 +330,8 @@ class RevGATBlock(nn.Module):
 class RevGAT(nn.Module):
     def __init__(
         self,
-        in_feats,
+        args,
         n_classes,
-        n_hidden,
-        n_layers,
-        n_heads,
         activation,
         dropout=0.0,
         input_drop=0.0,
@@ -323,30 +342,31 @@ class RevGAT(nn.Module):
         group=2,
         use_gpt_preds=False,
         input_norm=True,
+        lora_params = None
     ):
         super().__init__()
-        self.in_feats = in_feats
-        self.n_hidden = n_hidden
+        self.in_feats = args.n_node_feats
+        self.n_hidden = args.n_hidden
         self.n_classes = n_classes
-        self.n_layers = n_layers
-        self.num_heads = n_heads
+        self.n_layers = args.n_layers
+        self.num_heads = args.n_heads
         self.group = group
 
         self.convs = nn.ModuleList()
-        self.norm = nn.BatchNorm1d(n_heads * n_hidden)
+        self.norm = nn.BatchNorm1d(self.num_heads * self.n_hidden)
         if input_norm:
-            self.input_norm = nn.BatchNorm1d(in_feats)
+            self.input_norm = nn.BatchNorm1d(self.in_feats)
 
         if use_gpt_preds:
-            self.encoder = torch.nn.Embedding(n_classes + 1, n_hidden)
+            self.encoder = _init_lora_emb(n_classes + 1, self.n_hidden, lora_params)
 
-        for i in range(n_layers):
-            in_hidden = n_heads * n_hidden if i > 0 else in_feats
-            out_hidden = n_hidden if i < n_layers - 1 else n_classes
-            num_heads = n_heads if i < n_layers - 1 else 1
-            out_channels = n_heads
+        for i in range(self.n_layers):
+            in_hidden = self.num_heads * self.n_hidden if i > 0 else self.in_feats
+            out_hidden = self.n_hidden if i < self.n_layers - 1 else n_classes
+            num_heads = self.num_heads if i < self.n_layers - 1 else 1
+            out_channels = self.num_heads
 
-            if i == 0 or i == n_layers - 1:
+            if i == 0 or i == self.n_layers - 1:
                 self.convs.append(
                     GATConv(
                         in_hidden,
@@ -357,6 +377,7 @@ class RevGAT(nn.Module):
                         use_attn_dst=use_attn_dst,
                         use_symmetric_norm=use_symmetric_norm,
                         residual=True,
+                        lora_params = lora_params
                     )
                 )
             else:
@@ -372,6 +393,7 @@ class RevGAT(nn.Module):
                     use_attn_dst=use_attn_dst,
                     use_symmetric_norm=use_symmetric_norm,
                     residual=True,
+                    lora_params = lora_params
                 )
                 for i in range(self.group):
                     if i == 0:
@@ -426,56 +448,3 @@ class RevGAT(nn.Module):
         x = self.bias_last(x)
 
         return x
-
-# LM-GNN
-class E5_RevGAT(nn.Module):
-    #1 直接联合模型
-    #2 训练时联合模型
-    def __init__(
-        self, 
-        args,
-        in_feats,
-        n_classes,
-        n_hidden,
-        n_layers,
-        n_heads,
-        activation,
-        dropout=0.0,
-        input_drop=0.0,
-        attn_drop=0.0,
-        edge_drop=0.0,
-        use_attn_dst=True,
-        use_symmetric_norm=False,
-        group=2,
-        use_gpt_preds=False,
-        input_norm=True
-        ):
-        super().__init__()
-        self.lm = E5_model(args)
-        self.gnn = RevGAT(
-            in_feats,
-            n_classes,
-            n_hidden,
-            n_layers,
-            n_heads,
-            activation,
-            dropout=0.0,
-            input_drop=0.0,
-            attn_drop=0.0,
-            edge_drop=0.0,
-            use_attn_dst=True,
-            use_symmetric_norm=False,
-            group=2,
-            use_gpt_preds=False,
-            input_norm=True
-        )
-        
-    def forward(self, graph, token, onehot):
-        
-        out, embs = self.lm.forward(token.input_ids, token.attention_mask,return_hidden=True)
-        embs = torch.cat([embs, onehot], dim=-1)
-        x = self.gnn.forward(graph, embs)
-        
-        return x
-        
-    

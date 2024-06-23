@@ -1,6 +1,17 @@
 {
     "version": "0.2.0",
     "configurations": [
+        
+        {
+            "name": "Python: Attach",
+            "type": "debugpy",
+            "request": "attach",
+            "justMyCode": false,
+            "connect": {
+                "host": "localhost",
+                "port": 12346
+            }
+        },
         {
             "name": "Python 调试程序: 当前文件",
             "type": "debugpy",
@@ -20,16 +31,7 @@
             // "preLaunchTask": "startLogging",
             // "envFile": "${workspaceFolder}/.env",
         },
-        {
-            "name": "Python: Attach",
-            "type": "debugpy",
-            "request": "attach",
-            "justMyCode": false,
-            "connect": {
-                "host": "localhost",
-                "port": 12346
-            }
-        },
+        
         {
             "name": "Python Debugger: Python File",
             "type": "debugpy",

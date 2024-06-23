@@ -11,11 +11,14 @@ import sys
 import time
 import uuid
 from functools import reduce
+from functools import lru_cache
+
 
 import dgl
 import numpy as np
 import optuna
 import torch
+
 import torch.nn.functional as F
 import torch.optim as optim
 from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
@@ -34,9 +37,9 @@ epsilon = 1 - math.log(2)
 
 device = None
 
-dataset = "ogbn-arxiv"
+dataset = "ogbn-products"
 n_node_feats, n_classes = 0, 0
-
+sub_idx = None
 
 def seed(seed=0):
     random.seed(seed)
@@ -50,7 +53,7 @@ def seed(seed=0):
 
 
 def load_data(dataset, args):
-    global n_node_feats, n_classes
+    global n_node_feats, n_classes, sub_idx
 
     data = DglNodePropPredDataset(name=dataset, root="../dgl_data")
     evaluator = Evaluator(name=dataset)
@@ -58,9 +61,19 @@ def load_data(dataset, args):
     splitted_idx = data.get_idx_split()
     train_idx, val_idx, test_idx = splitted_idx["train"], splitted_idx["valid"], splitted_idx["test"]
     graph, labels = data[0]
+    args.debug = 100000
+    sub_idx = torch.randperm(graph.number_of_nodes())[:args.debug]
+    sub_idx = torch.sort(sub_idx).values
+    
+    train_idx = train_idx[torch.isin(train_idx, sub_idx)]
+    val_idx = val_idx[torch.isin(val_idx, sub_idx)]
+    test_idx = test_idx[torch.isin(test_idx, sub_idx)]
+    labels = labels[sub_idx]
+    graph = dgl.node_subgraph(graph, sub_idx)
+    # text_data = Subset(text_data, debug_idx)
 
     if args.use_bert_x:
-        graph.ndata["feat"] = torch.load(args.bert_x_dir)
+        graph.ndata["feat"] = torch.load(args.bert_x_dir)[sub_idx]
         logger.warning(
             "Loaded pre-trained node embeddings of shape={} from {}".format(graph.ndata["feat"].shape, args.bert_x_dir)
         )
@@ -136,7 +149,18 @@ def gen_model(args):
 
     return model
 
+@lru_cache(8)
+def id_in_parent(parent,sub):
+    # 第一步：对 tensor1 进行排序
+    sorted_parent, sorted_indices = torch.sort(parent)
 
+    # 第二步：使用 torch.searchsorted 查找 tensor2 中每个元素在排序后的 tensor1 中的位置
+    sorted_pos = torch.searchsorted(sorted_parent, sub)
+
+    # 第三步：将排序后的索引映射回原始的索引
+    return sorted_indices[sorted_pos]
+
+        
 def custom_loss_function(x, labels, label_smoothing_factor):
     y = F.cross_entropy(x, labels[:, 0], reduction="none", label_smoothing=label_smoothing_factor)
     y = torch.log(epsilon + y) - math.log(epsilon)
@@ -144,8 +168,9 @@ def custom_loss_function(x, labels, label_smoothing_factor):
 
 
 def add_labels(feat, labels, idx):
+    global sub_idx
     onehot = torch.zeros([feat.shape[0], n_classes], device=device)
-    onehot[idx, labels[idx, 0]] = 1
+    onehot[id_in_parent(sub_idx,idx), labels[id_in_parent(sub_idx,idx), 0]] = 1
     return torch.cat([feat, onehot], dim=-1)
 
 
@@ -154,10 +179,16 @@ def adjust_learning_rate(optimizer, lr, epoch):
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr * epoch / 50
 
+def print_device(model):
+    devices = {param.device for param in model.parameters()}
+    print(f"Model parameters are on devices: {devices}")
+    buffers = {buf.device for buf in model.buffers()}
+    print(f"Model buffers are on devices: {buffers}")
 
 def train(
     args, model, graph, labels, train_idx, val_idx, test_idx, optimizer, evaluator, mode="teacher", teacher_output=None
 ):
+    global sub_idx
     model.train()
     if mode == "student":
         assert teacher_output != None
@@ -179,8 +210,8 @@ def train(
 
         train_pred_idx = train_idx[mask]
 
-    optimizer.zero_grad()
-    # feat = feat[:16,:]
+    optimizer.zero_grad()    # feat = feat[:16,:]
+    # print_device(model)
     if args.n_label_iters > 0:
         with torch.no_grad():
             pred = model(graph, feat)
@@ -192,11 +223,11 @@ def train(
         for _ in range(args.n_label_iters):
             pred = pred.detach()    #requires_grad为false, 梯度向前传播到此为止
             torch.cuda.empty_cache()
-            feat[unlabel_idx, -n_classes:] = F.softmax(pred[unlabel_idx], dim=-1)   # 将预测label写入
+            feat[id_in_parent(sub_idx,unlabel_idx), -n_classes:] = F.softmax(pred[id_in_parent(sub_idx,unlabel_idx)], dim=-1)   # 将预测label写入
             pred = model(graph, feat)
 
     if mode == "teacher":
-        loss = custom_loss_function(pred[train_pred_idx], labels[train_pred_idx], args.label_smoothing_factor)
+        loss = custom_loss_function(pred[id_in_parent(sub_idx,train_pred_idx)], labels[id_in_parent(sub_idx,train_pred_idx)], args.label_smoothing_factor)
     elif mode == "student":
         loss_gt = custom_loss_function(pred[train_pred_idx], labels[train_pred_idx], args.label_smoothing_factor)
         loss_kd = loss_kd_only(pred, teacher_output, temp)
@@ -207,7 +238,7 @@ def train(
     loss.backward()
     optimizer.step()
 
-    return evaluator(pred[train_idx], labels[train_idx]), loss.item()
+    return evaluator(pred[id_in_parent(sub_idx,train_idx)], labels[id_in_parent(sub_idx,train_idx)]), loss.item()
 
 
 @torch.no_grad()
@@ -224,17 +255,17 @@ def evaluate(args, model, graph, labels, train_idx, val_idx, test_idx, evaluator
     if args.n_label_iters > 0:
         unlabel_idx = torch.cat([val_idx, test_idx])
         for _ in range(args.n_label_iters):
-            feat[unlabel_idx, -n_classes:] = F.softmax(pred[unlabel_idx], dim=-1)
+            feat[id_in_parent(sub_idx,unlabel_idx), -n_classes:] = F.softmax(pred[id_in_parent(sub_idx,unlabel_idx)], dim=-1)
             pred = model(graph, feat)
 
-    train_loss = custom_loss_function(pred[train_idx], labels[train_idx], 0)
-    val_loss = custom_loss_function(pred[val_idx], labels[val_idx], 0)
-    test_loss = custom_loss_function(pred[test_idx], labels[test_idx], 0)
+    train_loss = custom_loss_function(pred[id_in_parent(sub_idx,train_idx)], labels[id_in_parent(sub_idx,train_idx)], 0)
+    val_loss = custom_loss_function(pred[id_in_parent(sub_idx,val_idx)], labels[id_in_parent(sub_idx,val_idx)], 0)
+    test_loss = custom_loss_function(pred[id_in_parent(sub_idx,test_idx)], labels[id_in_parent(sub_idx,test_idx)], 0)
 
     return (
-        evaluator(pred[train_idx], labels[train_idx]),
-        evaluator(pred[val_idx], labels[val_idx]),
-        evaluator(pred[test_idx], labels[test_idx]),
+        evaluator(pred[id_in_parent(sub_idx,train_idx)], labels[id_in_parent(sub_idx,train_idx)]),
+        evaluator(pred[id_in_parent(sub_idx,val_idx)], labels[id_in_parent(sub_idx,val_idx)]),
+        evaluator(pred[id_in_parent(sub_idx,test_idx)], labels[id_in_parent(sub_idx,test_idx)]),
         train_loss,
         val_loss,
         test_loss,
@@ -248,6 +279,11 @@ def save_pred(pred, run_num, kd_dir):
     fname = os.path.join(kd_dir, "best_pred_run{}.pt".format(run_num))
     torch.save(pred.cpu(), fname)
 
+def save_model(model, run_num, out_dir):
+    out_dir = f"{out_dir}/ckpt"
+    os.makedirs(out_dir,exist_ok=True)
+    fname = os.path.join(out_dir, "best_run{}.pt".format(run_num))
+    torch.save(model.state_dict(), fname)
 
 def run(args, graph, labels, train_idx, val_idx, test_idx, evaluator, n_running):
     evaluator_wrapper = lambda pred, labels: evaluator.eval(
@@ -310,6 +346,7 @@ def run(args, graph, labels, train_idx, val_idx, test_idx, evaluator, n_running)
             final_pred = pred
             if mode == "teacher":
                 save_pred(final_pred, n_running, args.kd_dir)
+            save_model(model_gnn, n_running, args.output_dir)
 
         if epoch == args.n_epochs or epoch % args.log_every == 0:
             logger.info(
@@ -387,8 +424,8 @@ def parse_args():
     argparser.add_argument("--cpu", action="store_true", help="CPU mode. This option overrides --gpu.")
     argparser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
     argparser.add_argument("--seed", type=int, default=42, help="seed")
-    argparser.add_argument("--n-runs", type=int, default=10, help="running times")
-    argparser.add_argument("--n-epochs", type=int, default=200, help="number of epochs")
+    argparser.add_argument("--n-runs", type=int, default=1, help="running times")
+    argparser.add_argument("--n-epochs", type=int, default=100, help="number of epochs")
     argparser.add_argument(
         "--use-labels", action="store_true", help="Use labels in the training set as input features."
     )
@@ -427,7 +464,7 @@ def parse_args():
 
 
 def main():
-    global device, n_node_feats, n_classes, epsilon
+    global device, n_node_feats, n_classes, epsilon, sub_idx
     set_logging()
     args = parse_args()
 
@@ -447,12 +484,13 @@ def main():
     graph, labels, train_idx, val_idx, test_idx, evaluator = load_data(dataset, args)
     graph = preprocess(graph)
 
-    graph, labels, train_idx, val_idx, test_idx = map(
-        lambda x: x.to(device), (graph, labels, train_idx, val_idx, test_idx)
+    graph, labels, train_idx, val_idx, test_idx, sub_idx = map(
+        lambda x: x.to(device), (graph, labels, train_idx, val_idx, test_idx, sub_idx)
     )
 
     logger.info(args)
     logger.info(f"Number of params: {count_parameters(args)}")
+    
 
     # run
     val_accs, test_accs = [], []

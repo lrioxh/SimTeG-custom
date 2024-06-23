@@ -21,7 +21,7 @@ node_cls_model_class = {
     "e5-large": E5_model,
     "e5-large-v2": E5_model,
     "roberta-large": Roberta,
-    "e5-revgat": E5_RevGAT,
+    # "e5-revgat": E5_RevGAT,
 }
 
 link_pred_model_class = {
