@@ -366,7 +366,7 @@ class RevGAT(nn.Module):
             num_heads = self.num_heads if i < self.n_layers - 1 else 1
             out_channels = self.num_heads
 
-            if i == 0 or i == self.n_layers - 1:
+            if i == 0: 
                 self.convs.append(
                     GATConv(
                         in_hidden,
@@ -378,6 +378,19 @@ class RevGAT(nn.Module):
                         use_symmetric_norm=use_symmetric_norm,
                         residual=True,
                         lora_params = lora_params
+                    )
+                )
+            elif i == self.n_layers - 1:
+                self.convs.append(
+                    GATConv(
+                        in_hidden,
+                        out_hidden,
+                        num_heads=num_heads,
+                        attn_drop=attn_drop,
+                        edge_drop=edge_drop,
+                        use_attn_dst=use_attn_dst,
+                        use_symmetric_norm=use_symmetric_norm,
+                        residual=True,
                     )
                 )
             else:
