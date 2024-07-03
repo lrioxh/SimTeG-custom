@@ -128,6 +128,11 @@ class LM_GNN():
     )
         # 初始化GradScaler
         self.scaler = GradScaler() if self.args.fp16 else None
+        
+        if self.args.use_labels:
+            self.args.n_node_feats = self.args.hidden_size + self.n_classes
+        else:
+            self.args.n_node_feats = self.args.hidden_size
 
     def adjust_learning_rate(self, lr, epoch):
         if epoch <= 50:
@@ -139,13 +144,37 @@ class LM_GNN():
         fname = os.path.join(kd_dir, "best_pred_run{}.pt".format(run_num))
         torch.save(pred.cpu(), fname)  
         
-    def save_model(self, run_num):
+    def save_model(self, run_num, epoch):
         out_dir = f"{self.args.save}/ckpt"
         os.makedirs(out_dir,exist_ok=True)
-        fname_gnn = os.path.join(out_dir, f"best_run{run_num}_gnn.pt")
+        fname_gnn = os.path.join(out_dir, f"{epoch}_run_{run_num}_gnn.pt")
         torch.save(self.model_gnn.state_dict(), fname_gnn)  
-        fname_lm = os.path.join(out_dir, f"best_run{run_num}_lm.pt")
+        fname_lm = os.path.join(out_dir, f"{epoch}_run_{run_num}_lm.pt")
         torch.save(self.model_lm.state_dict(), fname_lm)  
+        
+    def save_stat(self, epoch):
+        out_dir = f"{self.args.save}/ckpt"
+        fname = os.path.join(out_dir, f"last_stat.pt")
+        torch.save({
+            'epoch': epoch,
+            'gnn_dict': self.model_gnn.state_dict(),
+            'lm_dict': self.model_lm.state_dict(),
+            'optm_dict': self.optimizer.state_dict(),
+            # 可以添加其他你需要保存的状态
+        }, fname)
+        logger.info(f"Saving stat ckpt for ep{epoch} ...")
+    
+    def load_stat(self):
+        out_dir = f"{self.args.save}/ckpt"
+        # self.args = 
+        fname = os.path.join(out_dir, f"last_stat.pt")
+        checkpoint = torch.load(fname)
+        self.model_gnn.load_state_dict(checkpoint['gnn_dict'])
+        self.model_lm.load_state_dict(checkpoint['lm_dict'])
+        self.optimizer.load_state_dict(checkpoint['optm_dict'])
+        start_epoch = checkpoint['epoch'] + 1  # 从上次结束的epoch开始
+        logger.info(f"Loaded last ckpt from {fname}, continue as ep{start_epoch}")
+        return start_epoch
         
     def count_parameters(self):
         return sum([p.numel() for p in \
@@ -291,10 +320,6 @@ class LM_GNN():
         # )
 
     def gen_model(self):
-        if self.args.use_labels:
-            self.args.n_node_feats = self.args.hidden_size + self.n_classes
-        else:
-            self.args.n_node_feats = self.args.hidden_size
 
         if self.args.gnn_type == "RevGAT":
             self.model_gnn = RevGAT(
@@ -537,12 +562,16 @@ class LM_GNN():
 
         # define model and optimizer
         #e5_revgat
-        self.gen_model()
+        if self.args.proceed and self.optimizer==None:
+            self.load_stat()
+        else:
+            self.gen_model()
+            self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
+                                       lr=self.args.lr, weight_decay=self.args.wd)
+        
         logger.info(f"Number of params: {self.count_parameters()}")
         self.model_gnn.to(self.device)
         self.model_lm.to(self.device)
-        self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
-                                       lr=self.args.lr, weight_decay=self.args.wd)
         
         # training loop
         total_time = 0
@@ -553,6 +582,7 @@ class LM_GNN():
         losses, train_losses, val_losses, test_losses = [], [], [], []
 
         for epoch in range(1, self.args.n_epochs + 1):
+            
             tic = time.time()
             if mode == "student":
                 teacher_output = torch.load("./{}/best_pred_run{}.pt".format(self.args.kd_dir, n_running)).cpu().cuda()
@@ -600,6 +630,8 @@ class LM_GNN():
                 [acc, train_acc, val_acc, test_acc, loss, train_loss, val_loss, test_loss],
             ):
                 l.append(e)
+            
+            self.save_stat(epoch)
 
         logger.info("*" * 50)
         logger.info(f"Best val acc: {best_val_acc}, Final test acc: {final_test_acc}")
@@ -622,7 +654,7 @@ def main():
 
     # gbc.args.save = f"{gbc.args.output_dir}/{gbc.args.dataset}/{gbc.args.model_type}/{gbc.args.suffix}"
     # os.makedirs(gbc.args.save,exist_ok=True)
-    save_args(gbc.args, gbc.args.save)
+    
     
     if not gbc.args.use_labels and gbc.args.n_label_iters > 0:
         raise ValueError("'--use-labels' must be enabled when n_label_iters > 0")
@@ -635,6 +667,7 @@ def main():
     gbc.prepare()
     # gbc.gen_model()
     logger.info(gbc.args)
+    save_args(gbc.args, gbc.args.save)
     # logger.info(f"Number of params: {gbc.count_parameters()}")
     
     # run

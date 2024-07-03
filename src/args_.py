@@ -9,6 +9,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         "GAT implementation on ogbn-arxiv", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser.add_argument("--proceed", action="store_true", default=False, help="Continue to train on presaved ckpt")
     parser.add_argument("--suffix", type=str, default="main")
     parser.add_argument("--cpu", action="store_true", help="CPU mode. This option overrides --gpu.")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
@@ -120,7 +121,7 @@ def parse_args():
     args.use_peft = True
     args.fp16 = True
     args.use_labels = True
-    args.debug = -1
+    args.debug = 60000
     return args
 
 def save_args(args, dir):
