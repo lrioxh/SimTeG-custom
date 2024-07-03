@@ -169,10 +169,12 @@ class LM_GNN():
         # self.args = 
         fname = os.path.join(out_dir, f"last_stat.pt")
         checkpoint = torch.load(fname)
+        start_epoch = checkpoint['epoch'] + 1  # 从上次结束的epoch开始
+        if self.args.fullft < start_epoch:
+            self.lora_gnn()     
         self.model_gnn.load_state_dict(checkpoint['gnn_dict'])
         self.model_lm.load_state_dict(checkpoint['lm_dict'])
         self.optimizer.load_state_dict(checkpoint['optm_dict'])
-        start_epoch = checkpoint['epoch'] + 1  # 从上次结束的epoch开始
         logger.info(f"Loaded last ckpt from {fname}, continue as ep{start_epoch}")
         return start_epoch
         
@@ -562,10 +564,10 @@ class LM_GNN():
 
         # define model and optimizer
         #e5_revgat
+        self.gen_model()
         if self.args.proceed and self.optimizer==None:
             self.load_stat()
         else:
-            self.gen_model()
             self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
                                        lr=self.args.lr, weight_decay=self.args.wd)
         
@@ -588,10 +590,11 @@ class LM_GNN():
                 teacher_output = torch.load("./{}/best_pred_run{}.pt".format(self.args.kd_dir, n_running)).cpu().cuda()
             else:
                 teacher_output = None
-
-            self.adjust_learning_rate(self.args.lr, epoch)
+                
             if self.args.fullft + 1 == epoch:
-                self.lora_gnn()
+                self.lora_gnn()     #TODO:与继续训练不兼容
+            self.adjust_learning_rate(self.args.lr, epoch)
+
             acc, loss = self.train(
                 epoch,
                 evaluator_wrapper,

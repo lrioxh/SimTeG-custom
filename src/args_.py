@@ -121,7 +121,7 @@ def parse_args():
     args.use_peft = True
     args.fp16 = True
     args.use_labels = True
-    args.debug = 60000
+    args.debug = -1
     return args
 
 def save_args(args, dir):
