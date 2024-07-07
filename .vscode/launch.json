@@ -26,7 +26,10 @@
                 "suffix": "main",
                 "output_dir": "${workspaceFolder}/out/${env:dataset}/${env:model_type}/${env:suffix}",
                 "ckpt_dir": "${env:output_dir}/ckpt",
-            },
+            },            
+            "args": [
+                "--proceed",
+            ],
             // "redirectOutput": true,
             // "preLaunchTask": "startLogging",
             // "envFile": "${workspaceFolder}/.env",

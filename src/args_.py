@@ -15,7 +15,7 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--n_runs", type=int, default=1, help="running times")
-    parser.add_argument("--n_epochs", type=int, default=10, help="number of epochs")    
+    parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs")    
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
     parser.add_argument("--batch_size", type=int, default=160, help="for LM static embedding")

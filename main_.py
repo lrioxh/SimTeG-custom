@@ -166,16 +166,17 @@ class LM_GNN():
     
     def load_stat(self):
         out_dir = f"{self.args.save}/ckpt"
-        # self.args = 
         fname = os.path.join(out_dir, f"last_stat.pt")
-        checkpoint = torch.load(fname)
+        checkpoint = torch.load(fname, map_location=self.device)
         start_epoch = checkpoint['epoch'] + 1  # 从上次结束的epoch开始
         if self.args.fullft < start_epoch:
             self.lora_gnn()     
+        self.model_lm.to(self.device)
         self.model_gnn.load_state_dict(checkpoint['gnn_dict'])
         self.model_lm.load_state_dict(checkpoint['lm_dict'])
         self.optimizer.load_state_dict(checkpoint['optm_dict'])
         logger.info(f"Loaded last ckpt from {fname}, continue as ep{start_epoch}")
+        del checkpoint
         return start_epoch
         
     def count_parameters(self):
@@ -561,12 +562,12 @@ class LM_GNN():
 
         # kd mode
         mode = self.args.kd_mode
-
+        start_ep = 0
         # define model and optimizer
         #e5_revgat
         self.gen_model()
         if self.args.proceed and self.optimizer==None:
-            self.load_stat()
+            start_ep = self.load_stat()
         else:
             self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
                                        lr=self.args.lr, weight_decay=self.args.wd)
@@ -583,7 +584,7 @@ class LM_GNN():
         accs, train_accs, val_accs, test_accs = [], [], [], []
         losses, train_losses, val_losses, test_losses = [], [], [], []
 
-        for epoch in range(1, self.args.n_epochs + 1):
+        for epoch in range(start_ep + 1, self.args.n_epochs + 1):
             
             tic = time.time()
             if mode == "student":
