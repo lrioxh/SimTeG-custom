@@ -358,7 +358,7 @@ class RevGAT(nn.Module):
             self.input_norm = nn.BatchNorm1d(self.in_feats)
 
         if use_gpt_preds:
-            self.encoder = _init_lora_emb(n_classes + 1, self.n_hidden, lora_params)
+            self.encoder = _init_lora_emb(n_classes + 1, args.n_gpt_embs, lora_params)
 
         for i in range(self.n_layers):
             in_hidden = self.num_heads * self.n_hidden if i > 0 else self.in_feats

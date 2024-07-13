@@ -91,6 +91,7 @@ class LM_GNN():
         self.device = None
         self.text_data = None
         self.feat_static = None
+        self.gpt_preds = None
         self.graph = None
         self.graph_loader = None
         self.labels = None
@@ -115,7 +116,6 @@ class LM_GNN():
                             )
         if len(idx)>0:
             onehot[idx, labels[idx, 0]] = 1
-            
         return onehot
     
     def prepare(self):
@@ -129,10 +129,10 @@ class LM_GNN():
         # 初始化GradScaler
         self.scaler = GradScaler() if self.args.fp16 else None
         
-        if self.args.use_labels:
-            self.args.n_node_feats = self.args.hidden_size + self.n_classes
-        else:
-            self.args.n_node_feats = self.args.hidden_size
+        # if self.args.use_labels:
+        #     self.args.n_node_feats += self.n_classes
+        # else:
+        #     self.args.n_node_feats = self.args.hidden_size
 
     def adjust_learning_rate(self, lr, epoch):
         if epoch <= 50:
@@ -152,14 +152,15 @@ class LM_GNN():
         fname_lm = os.path.join(out_dir, f"{epoch}_run_{run_num}_lm.pt")
         torch.save(self.model_lm.state_dict(), fname_lm)  
         
-    def save_stat(self, epoch):
+    def save_stat(self, epoch, name):
         out_dir = f"{self.args.save}/ckpt"
-        fname = os.path.join(out_dir, f"last_stat.pt")
+        fname = os.path.join(out_dir, f"{name}_stat.pt")
         torch.save({
             'epoch': epoch,
             'gnn_dict': self.model_gnn.state_dict(),
             'lm_dict': self.model_lm.state_dict(),
             'optm_dict': self.optimizer.state_dict(),
+            'feat_static': self.feat_static,
             # 可以添加其他你需要保存的状态
         }, fname)
         logger.info(f"Saving stat ckpt for ep{epoch} ...")
@@ -168,16 +169,21 @@ class LM_GNN():
         out_dir = f"{self.args.save}/ckpt"
         fname = os.path.join(out_dir, f"last_stat.pt")
         checkpoint = torch.load(fname, map_location=self.device)
-        start_epoch = checkpoint['epoch'] + 1  # 从上次结束的epoch开始
-        if self.args.fullft < start_epoch:
+        last_epoch = checkpoint['epoch']  # 从上次结束的epoch开始
+        if 0 < self.args.fullft <= last_epoch:
             self.lora_gnn()     
+        else:
+            self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
+                                       lr=self.args.lr, weight_decay=self.args.wd)
+            self.model_gnn.to(self.device)
         self.model_lm.to(self.device)
         self.model_gnn.load_state_dict(checkpoint['gnn_dict'])
         self.model_lm.load_state_dict(checkpoint['lm_dict'])
         self.optimizer.load_state_dict(checkpoint['optm_dict'])
-        logger.info(f"Loaded last ckpt from {fname}, continue as ep{start_epoch}")
+        self.feat_static = checkpoint['feat_static']
+        logger.info(f"Loaded last ckpt from {fname}, continue after ep{last_epoch}")
         del checkpoint
-        return start_epoch
+        return last_epoch
         
     def count_parameters(self):
         return sum([p.numel() for p in \
@@ -258,24 +264,24 @@ class LM_GNN():
         #     "Loaded node tokens of shape={}".format(text_token["input_ids"].shape)
         # )
         # TODO
+        self.args.n_node_feats = self.args.hidden_size
         if self.args.use_gpt_preds:
             preds = []
             with open(f"src/misc/gpt_preds/ogbn-arxiv.csv", "r") as file:
                 reader = csv.reader(file)
                 for row in reader:
-                    inner_list = []
-                    for value in row:
-                        inner_list.append(int(value))
-                    preds.append(inner_list)
+                    preds.append([int(i) for i in row])
             pl = torch.zeros(len(preds), 5, dtype=torch.long)
             for i, pred in enumerate(preds):
                 pl[i][: len(pred)] = torch.tensor(pred[:5], dtype=torch.long) + 1
-            self.graph.ndata["feat"] = pl
+            self.gpt_preds = pl
             logger.warning(
-                "Loaded pre-trained node embeddings of shape={} from gpt_preds".format(self.graph.ndata["feat"].shape)
+                "Loaded pre-trained node embeddings of shape={} from gpt_preds".format(pl.shape)
             )
+            
+            self.args.n_node_feats += self.args.n_gpt_embs * 5
+        
         if self.args.debug > 0:
-            # debug_size = 60000
             debug_idx = [i for i in range(self.args.debug)]
             self.train_idx = self.train_idx[self.train_idx < self.args.debug]
             self.val_idx = self.val_idx[self.val_idx < self.args.debug]
@@ -283,12 +289,11 @@ class LM_GNN():
             self.labels = self.labels[:self.args.debug]
             self.graph = dgl.node_subgraph(self.graph, debug_idx)
             self.text_data = Subset(self.text_data, debug_idx)
-        # if args.use_gpt_preds:
-        #     n_node_feats = args.n_hidden * 5
-        # else: 
         
         self.n_node = len(self.text_data)
         self.n_classes = (self.labels.max() + 1).item()
+        if self.args.use_labels:
+            self.args.n_node_feats += self.n_classes
         logger.warning(
             f"Loaded node tokens of shape=({self.n_node},{text_token.input_ids.shape[1]})")      
 
@@ -349,7 +354,9 @@ class LM_GNN():
             self.model_lm = E5_model(self.args)
         else:
             raise Exception("Unknown lm")
-
+        
+        self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
+                                    lr=self.args.lr, weight_decay=self.args.wd)
         return 1
 
     def lora_gnn(self):
@@ -406,7 +413,11 @@ class LM_GNN():
                                           dtype=torch.float16 if self.args.fp16 else torch.float32, 
                                           device=self.device)],
                               dim=-1)
-        # res = torch.zeros(self.labels.shape)
+        if self.args.use_gpt_preds:
+            self.feat_static = torch.cat([self.gpt_preds.to(dtype=torch.float16 if self.args.fp16 else torch.float32, 
+                                                            device=self.device)
+                                ,self.feat_static],
+                                dim=-1)
         
         # for 采样相邻节点id kernel_size为train_pred_idx， 扩充grad_padding为grad_idx
         num_batches = len(self.graph_loader)
@@ -468,6 +479,10 @@ class LM_GNN():
                     #     # train_pred_idx = kernel_idx
                     #     ...
                     
+                    if self.args.use_gpt_preds:
+                        embs = torch.cat([self.gpt_preds[grad_idx].to(self.device), embs], dim=-1)
+                        
+                    
                     feat = replace_rows(feat, self.id_in_parent(sub_idx, grad_idx), embs)
                     # static_feat[grad_idx] = embs
                     if self.args.n_label_iters > 0:
@@ -527,11 +542,14 @@ class LM_GNN():
         # feat = graph.ndata["feat"]
         self.feat_static = self.get_static_feat()
         graph = self.graph.to(device=self.device)
-        # gnn        
+        # gnn       
+        feat_eval = self.feat_static
         if self.args.use_labels:
             onehot_labels = self.cal_labels(self.n_node, self.labels, self.train_idx)
-            feat_eval = torch.cat([self.feat_static, onehot_labels], dim=-1)
-        
+            feat_eval = torch.cat([feat_eval, onehot_labels], dim=-1)
+        if self.args.use_gpt_preds:
+            feat_eval = torch.cat([self.gpt_preds.to(self.device), feat_eval], dim=-1)
+            
         pred = self.model_gnn(graph, feat_eval)
 
         if self.args.n_label_iters > 0:
@@ -555,22 +573,19 @@ class LM_GNN():
         )
 
 
-    def run(self, n_running):
+    def run(self, n_running, rseed):
         evaluator_wrapper = lambda pred, labels: self.evaluator.eval(
             {"y_pred": pred.argmax(dim=-1, keepdim=True), "y_true": labels} #onehot to cls
         )["acc"]
 
         # kd mode
         mode = self.args.kd_mode
-        start_ep = 0
         # define model and optimizer
         #e5_revgat
         self.gen_model()
-        if self.args.proceed and self.optimizer==None:
+        start_ep = 0
+        if self.args.proceed:
             start_ep = self.load_stat()
-        else:
-            self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
-                                       lr=self.args.lr, weight_decay=self.args.wd)
         
         logger.info(f"Number of params: {self.count_parameters()}")
         self.model_gnn.to(self.device)
@@ -592,8 +607,9 @@ class LM_GNN():
             else:
                 teacher_output = None
                 
-            if self.args.fullft + 1 == epoch:
+            if self.args.fullft > 0 and self.args.fullft + 1 == epoch:
                 self.lora_gnn()     #TODO:与继续训练不兼容
+                
             self.adjust_learning_rate(self.args.lr, epoch)
 
             acc, loss = self.train(
@@ -620,10 +636,11 @@ class LM_GNN():
                 final_pred = pred
                 if mode == "teacher":
                     self.save_pred(final_pred, n_running, self.args.kd_dir)
+                self.save_stat(epoch,f'best{rseed}')
 
             if epoch == self.args.n_epochs or epoch % self.args.log_every == 0:
                 logger.info(
-                    f"Run: {n_running}/{self.args.n_runs}, Epoch: {epoch}/{self.args.n_epochs}, Average epoch time: {total_time / epoch:.2f}\n"
+                    f"Run: {n_running}/{self.args.n_runs}/{rseed}, Epoch: {epoch}/{self.args.n_epochs}, Average epoch time: {total_time / epoch:.2f}\n"
                     f"Loss: {loss:.4f}, Acc: {acc:.4f}\n"
                     f"Train/Val/Test loss: {train_loss:.4f}/{val_loss:.4f}/{test_loss:.4f}\n"
                     f"Train/Val/Test/Best val/Final test acc: {train_acc:.4f}/{val_acc:.4f}/{test_acc:.4f}/{best_val_acc:.4f}/{final_test_acc:.4f}"
@@ -635,7 +652,7 @@ class LM_GNN():
             ):
                 l.append(e)
             
-            self.save_stat(epoch)
+            self.save_stat(epoch,'last')
 
         logger.info("*" * 50)
         logger.info(f"Best val acc: {best_val_acc}, Final test acc: {final_test_acc}")
@@ -651,13 +668,9 @@ class LM_GNN():
 
 
 def main():
-    # global device, n_node_feats, n_classes, epsilon
     set_logging()
     gbc = LM_GNN(parse_args())
     # args = parse_args()
-
-    # gbc.args.save = f"{gbc.args.output_dir}/{gbc.args.dataset}/{gbc.args.model_type}/{gbc.args.suffix}"
-    # os.makedirs(gbc.args.save,exist_ok=True)
     
     
     if not gbc.args.use_labels and gbc.args.n_label_iters > 0:
@@ -678,9 +691,10 @@ def main():
     val_accs, test_accs = [], []
 
     for i in range(gbc.args.n_runs):
-        seed(gbc.args.seed + i)
+        rseed = gbc.args.seed + i
+        seed(rseed)
         gbc.init_loader()
-        val_acc, test_acc = gbc.run(i + 1)
+        val_acc, test_acc = gbc.run(i + 1, rseed)
         val_accs.append(val_acc)
         test_accs.append(test_acc)
 

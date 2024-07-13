@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs")    
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
-    parser.add_argument("--batch_size", type=int, default=160, help="for LM static embedding")
+    parser.add_argument("--batch_size", type=int, default=200, help="for LM static embedding")
     parser.add_argument("--kernel_size", type=int, default=8, help="for trainable node kernel")
     parser.add_argument("--grad_padding", type=int, default=1, help="padding size for grad scope")
     parser.add_argument("--grad_size", type=int, default=20, help="Max Grad Size")
@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--use_labels", action="store_true", default=False, help="Use labels in the training set as input features."
     )
-    parser.add_argument("--n_label_iters", type=int, default=1, help="number of label iterations")
+    parser.add_argument("--n_label_iters", type=int, default=2, help="number of label iterations")
     # parser.add_argument("--mask_rate", type=float, default=0.5, help="train mask rate")
     parser.add_argument("--no_attn_dst", action="store_true", help="Don't use attn_dst.")
     parser.add_argument("--use_norm", action="store_true", help="Use symmetrically normalized adjacency matrix.")
@@ -102,10 +102,11 @@ def parse_args():
     
     #flag
     parser.add_argument("--fp16", action="store_true", default=False)
-    parser.add_argument("--use_gpt_preds", action="store_true")
+    parser.add_argument("--use_gpt_preds", action="store_true", default=False)
+    parser.add_argument("--n_gpt_embs", type=int, default=64)
     
     # peft & lora hyperparams
-    parser.add_argument("--fullft", type=int, default=5, help='full fine-tuning epochs before PEFT for GM')
+    parser.add_argument("--fullft", type=int, default=-1, help='full fine-tuning epochs before PEFT for GM')
     parser.add_argument("--use_peft", action="store_true", default=False)
     parser.add_argument("--peft_r", type=int, default=4)
     parser.add_argument("--peft_lora_alpha", type=float, default=8)
@@ -121,6 +122,7 @@ def parse_args():
     args.use_peft = True
     args.fp16 = True
     args.use_labels = True
+    args.use_gpt_preds = True
     args.debug = -1
     return args
 

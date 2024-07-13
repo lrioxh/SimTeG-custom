@@ -288,7 +288,7 @@ class RevGAT(nn.Module):
             self.input_norm = nn.BatchNorm1d(in_feats)
 
         if use_gpt_preds:
-            self.encoder = torch.nn.Embedding(n_classes + 1, n_hidden)
+            self.encoder = torch.nn.Embedding(n_classes + 1, 64)  #0-39+1(null)种
 
         for i in range(n_layers):
             in_hidden = n_heads * n_hidden if i > 0 else in_feats

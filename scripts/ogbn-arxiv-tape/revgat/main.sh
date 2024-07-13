@@ -34,7 +34,7 @@ model=revgat
 #     --n-runs 3 \
 #     2>&1 | tee ${output_dir}/log.txt
 
-dataset=ogbn-products
+dataset=ogbn-arxiv-tape
 
 lm_model_type=e5-large
 suffix=ensemble_X_${lm_model_type}
@@ -89,7 +89,7 @@ python -m debugpy --listen 12346 --wait-for-client \
     --n-layers 2 \
     --use-labels \
     --suffix ${suffix} \
-    --use_bert_x \
+    --use_gpt_preds \
     --bert_x_dir $bert_x_dir \
     --ckpt_dir $ckpt_dir \
     --output_dir $output_dir \

@@ -37,7 +37,7 @@ epsilon = 1 - math.log(2)
 
 device = None
 
-dataset = "ogbn-products"
+dataset="ogbn-arxiv"
 n_node_feats, n_classes = 0, 0
 sub_idx = None
 
@@ -90,13 +90,13 @@ def load_data(dataset, args):
         pl = torch.zeros(len(preds), 5, dtype=torch.long)
         for i, pred in enumerate(preds):
             pl[i][: len(pred)] = torch.tensor(pred[:5], dtype=torch.long) + 1
-        graph.ndata["feat"] = pl
+        graph.ndata["feat"] = pl[sub_idx]
         logger.warning(
             "Loaded pre-trained node embeddings of shape={} from gpt_preds".format(graph.ndata["feat"].shape)
         )
 
     if args.use_gpt_preds:
-        n_node_feats = args.n_hidden * 5
+        n_node_feats = 64 * 5
     else:
         n_node_feats = graph.ndata["feat"].shape[1]
     n_classes = (labels.max() + 1).item()
