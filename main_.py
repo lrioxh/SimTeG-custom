@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 import csv
 import gc
 import logging
@@ -9,6 +10,7 @@ import time
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 from functools import lru_cache
+from collections import deque
 
 import dgl
 import numpy as np
@@ -27,12 +29,7 @@ from src.dataset import load_data_bundle
 from src.args_ import parse_args, save_args
 import src.lora as lora
 
-# -*- coding: utf-8 -*-
-
-
 logger = logging.getLogger(__name__)
-
-
 
 def seed(seed=0):
     random.seed(seed)
@@ -51,7 +48,7 @@ def preprocess(graph):
     # make bidirected
     # feat = graph.ndata["feat"]
     graph = dgl.to_bidirected(graph)
-    # graph.ndata["feat"] = feat
+    graph.ndata["feat"] = torch.empty((graph.num_nodes(), 0))
 
     # add self-loop
     logger.info(f"Total edges before adding self-loop {graph.number_of_edges()}")
@@ -100,16 +97,48 @@ class LM_GNN():
         self.test_idx = None
         self.evaluator = None
         self.optimizer = None
+        self.criterion = None
         
         self.model_lm = None
         self.model_gnn = None
 
+    def reorder_train_idx(self):
+        '''邻接重排id'''
+        visited = set()
+        order = []
+        train_idx_set = set(self.train_idx.tolist())
         
-    def custom_loss_function(self, x, labels, label_smoothing_factor):
-        y = F.cross_entropy(x, labels[:, 0], reduction="none", label_smoothing=label_smoothing_factor)
-        y = torch.log(self.epsilon + y) - math.log(self.epsilon)
-        return torch.mean(y)
+        # Start BFS from each node in train_idx to ensure all nodes are covered
+        for start_node in self.train_idx.tolist():
+            if start_node not in visited:
+                queue = deque([start_node])
+                while queue:
+                    node = queue.popleft()
+                    if node not in visited and node in train_idx_set:
+                        visited.add(node)
+                        order.append(node)
+                        neighbors = self.graph.successors(node).tolist()
+                        queue.extend(neighbors)
+        
+        self.train_idx = torch.tensor(order)
 
+    
+    def custom_train_loss(self, labels, x1, x2 = None):
+        y1 = self.criterion(x1, labels[:, 0])
+        y = torch.log(self.epsilon + y1) - math.log(self.epsilon)
+        # if x2 != None: 
+        #     y2 = self.criterion(x2, labels[:, 0])
+        #     y += torch.log(self.epsilon + y2) - math.log(self.epsilon)
+        return torch.mean(y)
+    
+    def custom_eval_loss(self, labels, x1, x2 = None, label_smoothing_factor = 0):
+        y = F.cross_entropy(x1, labels[:, 0], reduction="none", label_smoothing=label_smoothing_factor)
+        y = torch.log(self.epsilon + y) - math.log(self.epsilon)
+        # if x2 != None: 
+        #     y2 = F.cross_entropy(x2, labels[:, 0], reduction="none", label_smoothing=label_smoothing_factor)
+        #     y += torch.log(self.epsilon + y2) - math.log(self.epsilon)
+        return torch.mean(y)
+    
     def cal_labels(self, length, labels, idx):
         onehot = torch.zeros([length, self.n_classes], device=self.device, 
                             #  dtype=torch.float16 if self.args.fp16 else torch.float32
@@ -126,19 +155,21 @@ class LM_GNN():
         self.labels, self.val_idx, self.test_idx = map(
         lambda x: x.to(self.device), (self.labels, self.val_idx, self.test_idx)
     )
+        # if self.feat_static != None:
+        #     self.feat_static = self.feat_static.to(self.device)
         # 初始化GradScaler
         self.scaler = GradScaler() if self.args.fp16 else None
-        
-        # if self.args.use_labels:
-        #     self.args.n_node_feats += self.n_classes
-        # else:
-        #     self.args.n_node_feats = self.args.hidden_size
+        self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=self.args.label_smoothing_factor, reduction ="none")
 
     def adjust_learning_rate(self, lr, epoch):
-        if epoch <= 50:
+        if epoch <= 30:
             for param_group in self.optimizer.param_groups:
-                param_group["lr"] = lr * epoch / 50
+                param_group["lr"] = lr * epoch / 30
 
+    def to_device(self, item):
+        if item != None:
+            item.to(self.device)
+            
     def save_pred(self, pred, run_num, kd_dir):
         os.makedirs(kd_dir,exist_ok=True)
         fname = os.path.join(kd_dir, "best_pred_run{}.pt".format(run_num))
@@ -150,7 +181,8 @@ class LM_GNN():
         fname_gnn = os.path.join(out_dir, f"{epoch}_run_{run_num}_gnn.pt")
         torch.save(self.model_gnn.state_dict(), fname_gnn)  
         fname_lm = os.path.join(out_dir, f"{epoch}_run_{run_num}_lm.pt")
-        torch.save(self.model_lm.state_dict(), fname_lm)  
+        if self.model_lm:
+            torch.save(self.model_lm.state_dict(), fname_lm)  
         
     def save_stat(self, epoch, name):
         out_dir = f"{self.args.save}/ckpt"
@@ -158,7 +190,7 @@ class LM_GNN():
         torch.save({
             'epoch': epoch,
             'gnn_dict': self.model_gnn.state_dict(),
-            'lm_dict': self.model_lm.state_dict(),
+            'lm_dict': self.model_lm.state_dict() if self.model_lm else None,
             'optm_dict': self.optimizer.state_dict(),
             'feat_static': self.feat_static,
             # 可以添加其他你需要保存的状态
@@ -170,35 +202,42 @@ class LM_GNN():
         fname = os.path.join(out_dir, f"last_stat.pt")
         checkpoint = torch.load(fname, map_location=self.device)
         last_epoch = checkpoint['epoch']  # 从上次结束的epoch开始
-        if 0 < self.args.fullft <= last_epoch:
+        logger.info(f"Loading last ckpt from {fname}, continue after ep{last_epoch}")
+        if 0 < self.args.peft_start <= last_epoch:
             self.lora_gnn()     
         else:
-            self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
-                                       lr=self.args.lr, weight_decay=self.args.wd)
-            self.model_gnn.to(self.device)
-        self.model_lm.to(self.device)
-        self.model_gnn.load_state_dict(checkpoint['gnn_dict'])
-        self.model_lm.load_state_dict(checkpoint['lm_dict'])
+            self.optimizer = optim.RMSprop(self.get_params(), lr=self.args.lr, weight_decay=self.args.wd)
+            self.to_device(self.model_gnn)
+        self.to_device(self.model_lm)
+        self.model_gnn.load_state_dict(checkpoint['gnn_dict'],strict=False)
+        if self.model_lm: self.model_lm.load_state_dict(checkpoint['lm_dict'])
+        # if self.args.peft_start != last_epoch: 
         self.optimizer.load_state_dict(checkpoint['optm_dict'])
         self.feat_static = checkpoint['feat_static']
-        logger.info(f"Loaded last ckpt from {fname}, continue after ep{last_epoch}")
         del checkpoint
         return last_epoch
-        
-    def count_parameters(self):
-        return sum([p.numel() for p in \
-                                    list(self.model_gnn.parameters())+list(self.model_lm.parameters()) \
-                                    if p.requires_grad])
+    
+    def get_params(self, grad_only = True):
+        params = []
+        if self.model_lm:
+            params+=[{'params': p, 'lr': self.args.lm_lr} for p in self.model_lm.parameters()]
+            self.lm_size = len(params)
+        if self.model_gnn:
+            params+=[{'params': p, 'lr': self.args.gm_lr} for p in self.model_gnn.parameters()]
+            self.gm_size = len(params)-self.lm_size
+        if grad_only:
+            return [p for p in params if p['params'].requires_grad]
+        else:
+            return params
+      
+    def count_params(self):
+        return sum([p['params'].numel() for p in self.get_params()])
+    
     @lru_cache(8)
     def id_in_parent(self, parent,sub):
         if self.args.frozen_padding >= 0:
-            # 第一步：对 tensor1 进行排序
             sorted_parent, sorted_indices = torch.sort(parent)
-
-            # 第二步：使用 torch.searchsorted 查找 tensor2 中每个元素在排序后的 tensor1 中的位置
             sorted_pos = torch.searchsorted(sorted_parent, sub)
-
-            # 第三步：将排序后的索引映射回原始的索引
             return sorted_indices[sorted_pos]
         else:
             return sub
@@ -231,7 +270,7 @@ class LM_GNN():
                 pbar.update(1)
             torch.cuda.empty_cache()
             gc.collect()
-        return feat
+        return feat.to('cpu')
          
     def load_data(self):
         assert self.args.dataset in [
@@ -240,29 +279,31 @@ class LM_GNN():
         data_graph = DglNodePropPredDataset(name=self.args.dataset, root="../dgl_data")
         self.evaluator = Evaluator(name=self.args.dataset)
         
-        # text attr
-        text_token, split_idx, evaluator = load_data_bundle(
-            self.args.dataset,
-            root=self.args.data_folder,
-            tokenizer=self.args.pretrained_repo,
-            tokenize=True)
-        # process data
-        if self.args.dataset == "ogbn-arxiv":
-            transform = T.ToUndirected()    #TODO: 加入PE处理有向图
-            text_token = transform(text_token)
-        
-        self.text_data = TensorDataset(text_token.input_ids, text_token.attention_mask) 
-        
         splitted_idx = data_graph.get_idx_split()
         self.train_idx, self.val_idx, self.test_idx = splitted_idx["train"], splitted_idx["valid"], splitted_idx["test"]
         self.graph, self.labels = data_graph[0]
+        
+        self.n_node = self.graph.num_nodes()
+        self.n_classes = (self.labels.max() + 1).item()
 
-        # if args.use_bert_x:
-        # self.graph.ndata["input_ids"] = text_token.input_ids
-        # self.graph.ndata["attention_mask"] = text_token.attention_mask
-        # logger.warning(
-        #     "Loaded node tokens of shape={}".format(text_token["input_ids"].shape)
-        # )
+        if self.args.use_external_feat:
+            self.feat_static = torch.load(self.args.feat_dir)
+            logger.warning(
+                f"Loaded pre-trained node embeddings of shape={self.feat_static.shape} from {self.args.feat_dir}"
+            )
+        else:
+            # text attr
+            text_token, split_idx, evaluator = load_data_bundle(
+                self.args.dataset,
+                root=self.args.data_folder,
+                tokenizer=self.args.pretrained_repo,
+                tokenize=True)
+            if self.args.dataset == "ogbn-arxiv":
+                transform = T.ToUndirected()    #TODO: 加入PE处理有向图
+                text_token = transform(text_token)
+            self.text_data = TensorDataset(text_token.input_ids, text_token.attention_mask) 
+            logger.warning(
+                f"Loaded node tokens of shape=({self.n_node},{text_token.input_ids.shape[1]})")      
         # TODO
         self.args.n_node_feats = self.args.hidden_size
         if self.args.use_gpt_preds:
@@ -289,17 +330,15 @@ class LM_GNN():
             self.labels = self.labels[:self.args.debug]
             self.graph = dgl.node_subgraph(self.graph, debug_idx)
             self.text_data = Subset(self.text_data, debug_idx)
-        
-        self.n_node = len(self.text_data)
-        self.n_classes = (self.labels.max() + 1).item()
+
         if self.args.use_labels:
             self.args.n_node_feats += self.n_classes
-        logger.warning(
-            f"Loaded node tokens of shape=({self.n_node},{text_token.input_ids.shape[1]})")      
-
+        if self.args.train_idx_cluster:
+            self.reorder_train_idx()
         return 1
 
     def init_loader(self):
+        # self.train_idx = reorder_nodes_dfs(self.graph, start_node=self.train_idx[0])
         if self.args.frozen_padding > 0: 
             sampler = dgl.dataloading.NeighborSampler(
                 [1]+[-1 for _ in range(self.args.frozen_padding)]+[1 for _ in range(self.args.grad_padding)])
@@ -315,17 +354,13 @@ class LM_GNN():
             #     batch_size = self.args.kernel_size
             # elif self.args.grad_padding == 0:
             sampler = dgl.dataloading.ShaDowKHopSampler([1 for _ in range(self.args.grad_padding)])
-            batch_size = self.args.kernel_size
             self.graph_loader = dgl.dataloading.DataLoader(
-                    self.graph, self.train_idx, sampler,
-                    batch_size=batch_size,
-                    shuffle=False,
-                    drop_last=False,
-                    num_workers=4)
-            
-        # self.graph, self.train_idx = map(
-        #     lambda x: x.to(self.device), (self.graph, self.train_idx)
-        # )
+                self.graph, self.train_idx, sampler,
+                batch_size=self.args.kernel_size,
+                shuffle=False,
+                drop_last=False,
+                num_workers=4)
+
 
     def gen_model(self):
 
@@ -349,14 +384,14 @@ class LM_GNN():
                 self.model_gnn.convs[-1].reset_parameters()
         else:
             raise Exception("Unknown gnn")
+        if not self.args.use_external_feat:
+            if self.args.lm_type == "e5-large":
+                self.model_lm = E5_model(self.args)
+            else:
+                raise Exception("Unknown lm")
         
-        if self.args.lm_type == "e5-large":
-            self.model_lm = E5_model(self.args)
-        else:
-            raise Exception("Unknown lm")
+        self.optimizer = optim.RMSprop(self.get_params(), lr=self.args.lr, weight_decay=self.args.wd)
         
-        self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
-                                    lr=self.args.lr, weight_decay=self.args.wd)
         return 1
 
     def lora_gnn(self):
@@ -383,19 +418,19 @@ class LM_GNN():
          
         gc.collect()
         torch.cuda.empty_cache()   
-        self.model_gnn.to(self.device)
+        self.to_device(self.model_gnn)
         lora.mark_only_lora_as_trainable(self.model_gnn)
-        self.optimizer = optim.RMSprop(list(self.model_gnn.parameters())+list(self.model_lm.parameters()), 
-                                       lr=self.args.lr, weight_decay=self.args.wd)
+        
+        self.optimizer = optim.RMSprop(self.get_params(), lr=self.args.lr, weight_decay=self.args.wd)
         
         logger.info("GM switched to LoRA")
-        logger.info(f"Number of params: {self.count_parameters()}")
+        logger.info(f"Number of params: {self.count_params()}")
 
     def train(
         self, epoch, evaluator, mode="teacher", teacher_output=None
     ):
         self.model_gnn.train()
-        self.model_lm.train()
+        if self.model_lm: self.model_lm.train()
         
         if mode == "student":
             assert teacher_output != None
@@ -406,17 +441,17 @@ class LM_GNN():
         # feat = graph.ndata["feat"]  #requires_grand=False
         if self.feat_static == None:
             self.feat_static = self.get_static_feat()
-            
+        feat_train = self.feat_static.to(self.device)
         if self.args.use_labels:
-            self.feat_static = torch.cat([self.feat_static, 
+            feat_train = torch.cat([feat_train, 
                               torch.zeros((self.n_node, self.n_classes), 
                                           dtype=torch.float16 if self.args.fp16 else torch.float32, 
                                           device=self.device)],
                               dim=-1)
         if self.args.use_gpt_preds:
-            self.feat_static = torch.cat([self.gpt_preds.to(dtype=torch.float16 if self.args.fp16 else torch.float32, 
+            feat_train = torch.cat([self.gpt_preds.to(dtype=torch.float16 if self.args.fp16 else torch.float32, 
                                                             device=self.device)
-                                ,self.feat_static],
+                                ,feat_train],
                                 dim=-1)
         
         # for 采样相邻节点id kernel_size为train_pred_idx， 扩充grad_padding为grad_idx
@@ -426,65 +461,63 @@ class LM_GNN():
             with self.graph_loader.enable_cpu_affinity():
                 for i, (sub_idx, train_pred_idx, blocks) in enumerate(self.graph_loader):
                     if self.args.frozen_padding > 0:
-                        # sub_idx = sub_idx.to(self.device)
                         graph = dgl.node_subgraph(self.graph, sub_idx, output_device=self.device)
                         grad_idx = blocks[-1].srcdata['_ID']
-                        feat = self.feat_static[sub_idx]
+                        feat = feat_train[sub_idx]
                         train_idx = sub_idx[torch.isin(sub_idx, self.train_idx)]
-                        # n_nodes = len(sub_idx)
                     elif self.args.frozen_padding == 0:
                         graph = blocks.to(device=self.device)
                         grad_idx = sub_idx
-                        feat = self.feat_static[sub_idx]
+                        feat = feat_train[sub_idx]
                         train_idx = sub_idx[torch.isin(sub_idx, self.train_idx)]
                     else:
                         graph = self.graph.to(device=self.device)
-                        feat = self.feat_static
+                        feat = feat_train
                         grad_idx = sub_idx
                         train_idx = self.train_idx
-                        # n_nodes = self.n_node
+                        
                     if len(grad_idx)>self.args.grad_size:
                         logger.info(f"grad_idx({len(grad_idx)}) sliced")
                         grad_idx = grad_idx[:self.args.grad_size]
+                        
                     self.optimizer.zero_grad()
-                    feat = feat.detach()
-                    subset = Subset(self.text_data, grad_idx) 
-                    dataloader = DataLoader(subset, batch_size=len(grad_idx))
-                    for _, (input_ids, attention_mask) in enumerate(dataloader):
-                        input_ids = input_ids.to(self.device)
-                        attention_mask = attention_mask.to(self.device)
-                        if self.args.fp16:
-                            with autocast():
-                                out, embs = self.model_lm(input_ids, attention_mask, return_hidden=True)
-                            # embs = embs.to(torch.float16)
-                            feat = feat.to(dtype=torch.float32)
-                        else:
-                            out, embs = self.model_lm(input_ids, attention_mask, return_hidden=True)
                     
-                    torch.cuda.empty_cache()    
-                    gc.collect()
+                    # feat = feat.detach()
+                    
+                    if not self.args.use_external_feat:
+                        subset = Subset(self.text_data, grad_idx) 
+                        dataloader = DataLoader(subset, batch_size=len(grad_idx))
+                        for _, (input_ids, attention_mask) in enumerate(dataloader):
+                            input_ids = input_ids.to(self.device)
+                            attention_mask = attention_mask.to(self.device)
+                            if self.args.fp16:
+                                with autocast():
+                                    out_lm, embs = self.model_lm(input_ids, attention_mask, return_hidden=True)
+                                # embs = embs.to(torch.float16)
+                                feat = feat.to(dtype=torch.float32)
+                            else:
+                                out_lm, embs = self.model_lm(input_ids, attention_mask, return_hidden=True)
+                    
+                        torch.cuda.empty_cache()    
+                        gc.collect()
+                        
                     # gnn
                     if self.args.use_labels:
-                       
                         train_labels_idx = set(train_idx.tolist()) - set(train_pred_idx.tolist())
                         train_labels_idx = torch.tensor(list(train_labels_idx))
                         onehot_labels = self.cal_labels(self.n_node, self.labels, train_labels_idx)
                         if len(train_labels_idx):
                             feat[self.id_in_parent(sub_idx, train_labels_idx),
                                 -self.n_classes:] = onehot_labels[train_labels_idx]
-                        embs = torch.cat([embs, onehot_labels[grad_idx]], dim=-1)
-                    # else:
-                    #     # mask = torch.rand(self.train_idx.shape) < self.args.mask_rate
-
-                    #     # train_pred_idx = kernel_idx
-                    #     ...
+                        if not self.args.use_external_feat:
+                            embs = torch.cat([embs, onehot_labels[grad_idx]], dim=-1)
                     
-                    if self.args.use_gpt_preds:
-                        embs = torch.cat([self.gpt_preds[grad_idx].to(self.device), embs], dim=-1)
+                    if not self.args.use_external_feat:
+                        if self.args.use_gpt_preds:
+                            embs = torch.cat([self.gpt_preds[grad_idx].to(self.device), embs], dim=-1)
                         
-                    
-                    feat = replace_rows(feat, self.id_in_parent(sub_idx, grad_idx), embs)
-                    # static_feat[grad_idx] = embs
+                        feat = replace_rows(feat, self.id_in_parent(sub_idx, grad_idx), embs)
+
                     if self.args.n_label_iters > 0:
                         with torch.no_grad():
                             pred = self.model_gnn(graph, feat)
@@ -499,26 +532,31 @@ class LM_GNN():
                         unlabel_idx = torch.tensor(list(unlabel_idx))
                         for _ in range(self.args.n_label_iters):
                             pred = pred.detach()    #requires_grad为false, 梯度向前传播到此为止
-                            torch.cuda.empty_cache()
+                            # torch.cuda.empty_cache()
                             onehot_labels[unlabel_idx] = F.softmax(
                                 pred[self.id_in_parent(sub_idx, unlabel_idx)], dim=-1)
                             feat[self.id_in_parent(sub_idx, unlabel_idx), -self.n_classes:] \
                                 = onehot_labels[unlabel_idx]
-                            # embs = torch.cat([embs, onehot_labels[grad_idx]], dim=-1)
-                            # feat = replace_rows(feat, grad_idx, embs)
                             pred = self.model_gnn(graph, feat)
 
                     if mode == "teacher":
-                        loss = self.custom_loss_function(pred[self.id_in_parent(sub_idx, train_pred_idx)], self.labels[train_pred_idx],self.args.label_smoothing_factor)
+                        loss = self.custom_train_loss(
+                            self.labels[train_pred_idx],
+                            pred[self.id_in_parent(sub_idx, train_pred_idx)]
+                            ) + \
+                            self.custom_train_loss(
+                            self.labels[train_pred_idx],
+                            out_lm[self.id_in_parent(sub_idx, train_pred_idx)] 
+                            ) if not self.args.use_external_feat else 0
                     elif mode == "student":
-                        loss_gt = self.custom_loss_function(pred[train_pred_idx], self.labels[train_pred_idx],self.args.label_smoothing_factor)
+                        loss_gt = self.custom_train_loss(pred[train_pred_idx], self.labels[train_pred_idx])
                         loss_kd = loss_kd_only(pred, teacher_output, temp)
                         loss = loss_gt * (1 - alpha) + loss_kd * alpha
                     else:
                         raise Exception("unkown mode")
                     
-                    torch.cuda.empty_cache()    
-                    gc.collect()
+                    # torch.cuda.empty_cache()    
+                    # gc.collect()
                     if self.args.fp16:
                         self.scaler.scale(loss).backward()
                         self.scaler.step(self.optimizer)
@@ -537,13 +575,14 @@ class LM_GNN():
         torch.cuda.empty_cache()    
         gc.collect()
         self.model_gnn.eval()
-        self.model_lm.eval()
+        if self.model_lm: self.model_lm.eval()
 
         # feat = graph.ndata["feat"]
-        self.feat_static = self.get_static_feat()
         graph = self.graph.to(device=self.device)
+        if not self.args.use_external_feat:
+            self.feat_static = self.get_static_feat()
         # gnn       
-        feat_eval = self.feat_static
+        feat_eval = self.feat_static.to(self.device)
         if self.args.use_labels:
             onehot_labels = self.cal_labels(self.n_node, self.labels, self.train_idx)
             feat_eval = torch.cat([feat_eval, onehot_labels], dim=-1)
@@ -557,10 +596,10 @@ class LM_GNN():
             for _ in range(self.args.n_label_iters):
                 onehot_labels[unlabel_idx] = F.softmax(pred[unlabel_idx], dim=-1)
                 pred = self.model_gnn(graph, feat_eval)
-
-        train_loss = self.custom_loss_function(pred[self.train_idx], self.labels[self.train_idx], 0)
-        val_loss = self.custom_loss_function(pred[self.val_idx], self.labels[self.val_idx], 0)
-        test_loss = self.custom_loss_function(pred[self.test_idx], self.labels[self.test_idx], 0)
+        #TODO: eval也计算lmloss
+        train_loss = self.custom_eval_loss(self.labels[self.train_idx], pred[self.train_idx])
+        val_loss = self.custom_eval_loss(self.labels[self.val_idx], pred[self.val_idx])
+        test_loss = self.custom_eval_loss(self.labels[self.test_idx], pred[self.test_idx])
 
         return (
             evaluator(pred[self.train_idx], self.labels[self.train_idx]),
@@ -587,9 +626,9 @@ class LM_GNN():
         if self.args.proceed:
             start_ep = self.load_stat()
         
-        logger.info(f"Number of params: {self.count_parameters()}")
-        self.model_gnn.to(self.device)
-        self.model_lm.to(self.device)
+        logger.info(f"Number of params: {self.count_params()}")
+        self.to_device(self.model_gnn)
+        self.to_device(self.model_lm)
         
         # training loop
         total_time = 0
@@ -607,7 +646,7 @@ class LM_GNN():
             else:
                 teacher_output = None
                 
-            if self.args.fullft > 0 and self.args.fullft + 1 == epoch:
+            if self.args.peft_start > 0 and self.args.peft_start == epoch:
                 self.lora_gnn()     #TODO:与继续训练不兼容
                 
             self.adjust_learning_rate(self.args.lr, epoch)
@@ -637,6 +676,7 @@ class LM_GNN():
                 if mode == "teacher":
                     self.save_pred(final_pred, n_running, self.args.kd_dir)
                 self.save_stat(epoch,f'best{rseed}')
+                logger.info(f'best{rseed} at ep{epoch} saved')
 
             if epoch == self.args.n_epochs or epoch % self.args.log_every == 0:
                 logger.info(
@@ -670,8 +710,6 @@ class LM_GNN():
 def main():
     set_logging()
     gbc = LM_GNN(parse_args())
-    # args = parse_args()
-    
     
     if not gbc.args.use_labels and gbc.args.n_label_iters > 0:
         raise ValueError("'--use-labels' must be enabled when n_label_iters > 0")
@@ -682,10 +720,8 @@ def main():
 
     # to device
     gbc.prepare()
-    # gbc.gen_model()
     logger.info(gbc.args)
     save_args(gbc.args, gbc.args.save)
-    # logger.info(f"Number of params: {gbc.count_parameters()}")
     
     # run
     val_accs, test_accs = [], []
@@ -706,7 +742,7 @@ def main():
     logger.info(test_accs)
     logger.info(f"Average val accuracy: {np.mean(val_accs)} ± {np.std(val_accs)}")
     logger.info(f"Average test accuracy: {np.mean(test_accs)} ± {np.std(test_accs)}")
-    logger.info(f"Number of params: {gbc.count_parameters()}")
+    logger.info(f"Number of params: {gbc.count_params()}")
 
 
 if __name__ == "__main__":

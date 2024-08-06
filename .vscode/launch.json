@@ -28,7 +28,7 @@
                 "ckpt_dir": "${env:output_dir}/ckpt",
             },            
             "args": [
-                "--proceed",
+                // "--proceed",
             ],
             // "redirectOutput": true,
             // "preLaunchTask": "startLogging",

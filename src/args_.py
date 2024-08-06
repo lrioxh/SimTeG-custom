@@ -15,7 +15,9 @@ def parse_args():
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID.")
     parser.add_argument("--seed", type=int, default=42, help="seed")
     parser.add_argument("--n_runs", type=int, default=1, help="running times")
-    parser.add_argument("--n_epochs", type=int, default=20, help="number of epochs")    
+    parser.add_argument("--n_epochs", type=int, default=30, help="number of epochs")       
+    parser.add_argument("--gm_lr", type=float, default=1e-3, help="learning rate for GM")
+    parser.add_argument("--lm_lr", type=float, default=1e-4, help="learning rate for LM") 
     parser.add_argument("--lr", type=float, default=0.001, help="learning rate")
     parser.add_argument("--wd", type=float, default=1e-5, help="weight decay")
     parser.add_argument("--batch_size", type=int, default=200, help="for LM static embedding")
@@ -35,10 +37,10 @@ def parse_args():
     parser.add_argument("--n_layers", type=int, default=2, help="number of layers")
     parser.add_argument("--n_heads", type=int, default=2, help="number of heads")
     parser.add_argument("--n_hidden", type=int, default=256, help="number of hidden units")
-    parser.add_argument("--dropout", type=float, default=0.75, help="dropout rate")
-    parser.add_argument("--input_drop", type=float, default=0.1, help="input drop rate")
+    parser.add_argument("--dropout", type=float, default=0.6, help="dropout rate")
+    parser.add_argument("--input_drop", type=float, default=0.3, help="input drop rate")
     parser.add_argument("--attn_drop", type=float, default=0.0, help="attention drop rate")
-    parser.add_argument("--edge_drop", type=float, default=0.0, help="edge drop rate")
+    parser.add_argument("--edge_drop", type=float, default=0.4, help="edge drop rate")
     parser.add_argument("--log_every", type=int, default=1, help="log every LOG_EVERY epochs")
     parser.add_argument("--plot_curves", action="store_true", help="plot learning curves")
     parser.add_argument("--save_pred", action="store_true", help="save final predictions")
@@ -49,7 +51,7 @@ def parse_args():
     parser.add_argument("--kd_mode", type=str, default="teacher", help="kd mode [teacher, student]")
     parser.add_argument("--alpha", type=float, default=0.5, help="ratio of kd loss")
     parser.add_argument("--temp", type=float, default=1.0, help="temperature of kd")
-    parser.add_argument("--label_smoothing_factor", type=float, default=0.3)
+    parser.add_argument("--label_smoothing_factor", type=float, default=0.01)
     
     parser.add_argument("--accum_interval", type=int, default=5)    #?
     parser.add_argument(
@@ -84,6 +86,8 @@ def parse_args():
     parser.add_argument("--task_type", type=str, default="node_cls")
     parser.add_argument("--ckpt_dir", type=str, default='', help="path to load gnn ckpt")
     parser.add_argument("--output_dir", type=str, default=f"out")    
+    parser.add_argument("--use_external_feat", action="store_true", help="use external static features")
+    parser.add_argument("--feat_dir", type=str,default="out/ogbn-arxiv/e5-large/main/cached_embs/x_embs.pt", help="path for external static features")
     # parser.add_argument(
     #     "--ckpt_name", type=str, default="TGRoberta-best.pt"
     # )  # ckpt name to be loaded    
@@ -101,14 +105,16 @@ def parse_args():
     )
     
     #flag
+    parser.add_argument("--train_idx_cluster", action="store_true", default=False)
     parser.add_argument("--fp16", action="store_true", default=False)
     parser.add_argument("--use_gpt_preds", action="store_true", default=False)
     parser.add_argument("--n_gpt_embs", type=int, default=64)
     
     # peft & lora hyperparams
-    parser.add_argument("--fullft", type=int, default=-1, help='full fine-tuning epochs before PEFT for GM')
+    parser.add_argument("--sfeat_start", type=int, default=0, help='epoch that start to train with static feat')
+    parser.add_argument("--peft_start", type=int, default=20, help='epoch that start to train GM with PEFT')
     parser.add_argument("--use_peft", action="store_true", default=False)
-    parser.add_argument("--peft_r", type=int, default=4)
+    parser.add_argument("--peft_r", type=int, default=8) #8
     parser.add_argument("--peft_lora_alpha", type=float, default=8)
     parser.add_argument("--peft_lora_dropout", type=float, default=0.3)
     
@@ -122,8 +128,11 @@ def parse_args():
     args.use_peft = True
     args.fp16 = True
     args.use_labels = True
-    args.use_gpt_preds = True
+    args.use_gpt_preds = False
     args.debug = -1
+    # args.proceed = False
+    args.use_external_feat = False
+    args.train_idx_cluster = False
     return args
 
 def save_args(args, dir):
